@@ -1,0 +1,77 @@
+[
+  {
+    "question": "How many users are there in total?",
+    "sql": "SELECT COUNT(*) FROM users",
+    "explanation": "This query counts all rows in the users table to get the total number of users."
+  },
+  {
+    "question": "How many active users do we have?",
+    "sql": "SELECT COUNT(*) FROM users WHERE is_active = TRUE",
+    "explanation": "This query counts only the users where the is_active column is TRUE."
+  },
+  {
+    "question": "What are the top 5 most expensive products?",
+    "sql": "SELECT name, price FROM products ORDER BY price DESC LIMIT 5",
+    "explanation": "This query selects product names and prices, orders them by price in descending order, and limits to 5 results."
+  },
+  {
+    "question": "Show me all orders from the last 30 days",
+    "sql": "SELECT * FROM orders WHERE order_date >= CURRENT_DATE - INTERVAL '30 days'",
+    "explanation": "This query selects all orders where the order_date is within the last 30 days."
+  },
+  {
+    "question": "What is the average order value?",
+    "sql": "SELECT AVG(total_amount) FROM orders",
+    "explanation": "This query calculates the average of the total_amount column from all orders."
+  },
+  {
+    "question": "Which products have low stock (less than 10 items)?",
+    "sql": "SELECT name, stock_quantity FROM products WHERE stock_quantity < 10",
+    "explanation": "This query finds products where the stock_quantity is less than 10."
+  },
+  {
+    "question": "How many orders are pending?",
+    "sql": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+    "explanation": "This query counts orders that have a status of 'pending'."
+  },
+  {
+    "question": "What is the total revenue from completed orders?",
+    "sql": "SELECT SUM(total_amount) FROM orders WHERE status = 'completed'",
+    "explanation": "This query sums the total_amount for all orders with 'completed' status."
+  },
+  {
+    "question": "Show me the top 10 customers by total spending",
+    "sql": "SELECT u.username, u.email, SUM(o.total_amount) as total_spent FROM users u JOIN orders o ON u.id = o.user_id WHERE o.status = 'completed' GROUP BY u.id, u.username, u.email ORDER BY total_spent DESC LIMIT 10",
+    "explanation": "This query joins users and orders tables, groups by user, sums their total spending, and shows the top 10 spenders."
+  },
+  {
+    "question": "What are the most popular product categories?",
+    "sql": "SELECT c.name, COUNT(p.id) as product_count FROM categories c LEFT JOIN products p ON c.id = p.category_id GROUP BY c.id, c.name ORDER BY product_count DESC",
+    "explanation": "This query joins categories and products tables, counts products per category, and orders by count."
+  },
+  {
+    "question": "Which users have never placed an order?",
+    "sql": "SELECT u.username, u.email FROM users u LEFT JOIN orders o ON u.id = o.user_id WHERE o.id IS NULL",
+    "explanation": "This query uses a LEFT JOIN to find users who don't have any corresponding orders."
+  },
+  {
+    "question": "What is the average rating for each product?",
+    "sql": "SELECT p.name, AVG(r.rating) as avg_rating FROM products p LEFT JOIN reviews r ON p.id = r.product_id GROUP BY p.id, p.name ORDER BY avg_rating DESC",
+    "explanation": "This query calculates the average rating for each product by joining products and reviews tables."
+  },
+  {
+    "question": "Show me monthly sales totals for this year",
+    "sql": "SELECT DATE_TRUNC('month', order_date) as month, SUM(total_amount) as monthly_total FROM orders WHERE EXTRACT(YEAR FROM order_date) = EXTRACT(YEAR FROM CURRENT_DATE) AND status = 'completed' GROUP BY DATE_TRUNC('month', order_date) ORDER BY month",
+    "explanation": "This query groups completed orders by month for the current year and sums the total amounts."
+  },
+  {
+    "question": "Which products have been ordered the most?",
+    "sql": "SELECT p.name, SUM(oi.quantity) as total_ordered FROM products p JOIN order_items oi ON p.id = oi.product_id JOIN orders o ON oi.order_id = o.id WHERE o.status = 'completed' GROUP BY p.id, p.name ORDER BY total_ordered DESC LIMIT 10",
+    "explanation": "This query joins products, order_items, and orders to find the most frequently ordered products."
+  },
+  {
+    "question": "What is the conversion rate of users to customers?",
+    "sql": "SELECT (COUNT(DISTINCT o.user_id) * 100.0 / COUNT(DISTINCT u.id)) as conversion_rate FROM users u LEFT JOIN orders o ON u.id = o.user_id",
+    "explanation": "This query calculates the percentage of users who have placed at least one order."
+  }
+] 

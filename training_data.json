@@ -1,0 +1,428 @@
+{
+  "schema": [
+    {
+      "table": "users",
+      "ddl": "CREATE TABLE users (\n            user_id INTEGER PRIMARY KEY,\n            full_name TEXT NOT NULL,\n            email TEXT UNIQUE NOT NULL,\n            created_at TEXT NOT NULL\n        )"
+    },
+    {
+      "table": "accounts",
+      "ddl": "CREATE TABLE accounts (\n            account_id INTEGER PRIMARY KEY,\n            user_id INTEGER NOT NULL,\n            account_type TEXT NOT NULL CHECK (account_type IN ('checking','savings','credit_card','brokerage_cash')),\n            account_name TEXT NOT NULL,\n            currency TEXT NOT NULL CHECK (currency IN ('AED','SAR','USD','EUR','GBP')),\n            opened_at TEXT NOT NULL,\n            closed_at TEXT,\n            starting_balance NUMERIC NOT NULL,\n            FOREIGN KEY (user_id) REFERENCES users(user_id)\n        )"
+    },
+    {
+      "table": "transactions",
+      "ddl": "CREATE TABLE transactions (\n            txn_id INTEGER PRIMARY KEY,\n            account_id INTEGER NOT NULL,\n            occurred_at TEXT NOT NULL,\n            posted_at TEXT NOT NULL,\n            direction TEXT NOT NULL CHECK (direction IN ('debit','credit')),\n            amount NUMERIC NOT NULL CHECK (amount > 0),\n            currency TEXT NOT NULL,\n            amount_aed NUMERIC NOT NULL,\n            fx_rate NUMERIC,\n            txn_type TEXT NOT NULL CHECK (txn_type IN ('purchase','atm_withdrawal','transfer_in','transfer_out',\n                'salary','refund','fee','interest','bill_payment','card_payment','cash_deposit','cheque')),\n            merchant_name TEXT,\n            merchant_category TEXT,\n            city TEXT,\n            country TEXT NOT NULL,\n            status TEXT NOT NULL CHECK (status IN ('pending','posted','reversed')),\n            description TEXT NOT NULL,\n            transfer_group_id TEXT,\n            running_balance_after NUMERIC NOT NULL,\n            FOREIGN KEY (account_id) REFERENCES accounts(account_id)\n        )"
+    },
+    {
+      "table": "daily_account_value",
+      "ddl": "CREATE TABLE daily_account_value (\n            dav_id INTEGER PRIMARY KEY,\n            account_id INTEGER NOT NULL,\n            date TEXT NOT NULL,\n            start_balance NUMERIC NOT NULL,\n            total_credits NUMERIC NOT NULL,\n            total_debits NUMERIC NOT NULL,\n            interest_accrued NUMERIC NOT NULL,\n            fees_charged NUMERIC NOT NULL,\n            end_balance NUMERIC NOT NULL,\n            FOREIGN KEY (account_id) REFERENCES accounts(account_id),\n            UNIQUE(account_id, date)\n        )"
+    },
+    {
+      "table": "fx_rates",
+      "ddl": "CREATE TABLE fx_rates (\n            rate_date TEXT NOT NULL,\n            base_currency TEXT NOT NULL,\n            aed_per_unit NUMERIC NOT NULL,\n            UNIQUE(rate_date, base_currency)\n        )"
+    },
+    {
+      "table": "merchants",
+      "ddl": "CREATE TABLE merchants (\n            merchant_id INTEGER PRIMARY KEY,\n            merchant_name TEXT NOT NULL,\n            merchant_category TEXT NOT NULL,\n            country TEXT NOT NULL\n        )"
+    }
+  ],
+  "query_pairs": [
+    {
+      "question": "How many users are registered?",
+      "sql": "SELECT COUNT(*) FROM users;"
+    },
+    {
+      "question": "Show all user emails.",
+      "sql": "SELECT email FROM users;"
+    },
+    {
+      "question": "What is the creation date for each user?",
+      "sql": "SELECT user_id, created_at FROM users;"
+    },
+    {
+      "question": "How many accounts does each user have?",
+      "sql": "SELECT user_id, COUNT(*) AS num_accounts FROM accounts GROUP BY user_id;"
+    },
+    {
+      "question": "List the account names and types for user ID 1.",
+      "sql": "SELECT account_name, account_type FROM accounts WHERE user_id = 1;"
+    },
+    {
+      "question": "What is the total starting balance across all accounts?",
+      "sql": "SELECT SUM(starting_balance) FROM accounts;"
+    },
+    {
+      "question": "Count accounts by account type.",
+      "sql": "SELECT account_type, COUNT(*) FROM accounts GROUP BY account_type;"
+    },
+    {
+      "question": "What is the total amount of all transactions?",
+      "sql": "SELECT SUM(amount) FROM transactions;"
+    },
+    {
+      "question": "How many transactions occurred in January 2024?",
+      "sql": "SELECT COUNT(*) FROM transactions WHERE occurred_at BETWEEN '2024-01-01' AND '2024-01-31';"
+    },
+    {
+      "question": "List the top 5 merchants by number of transactions.",
+      "sql": "SELECT merchant_name, COUNT(*) AS txn_count FROM transactions WHERE merchant_name IS NOT NULL GROUP BY merchant_name ORDER BY txn_count DESC LIMIT 5;"
+    },
+    {
+      "question": "Show total debit and credit amounts.",
+      "sql": "SELECT direction, SUM(amount) FROM transactions GROUP BY direction;"
+    },
+    {
+      "question": "How many distinct transaction types are there?",
+      "sql": "SELECT COUNT(DISTINCT txn_type) FROM transactions;"
+    },
+    {
+      "question": "Get the end balance for account 1 on 2024-01-03.",
+      "sql": "SELECT end_balance FROM daily_account_value WHERE account_id = 1 AND date = '2024-01-03';"
+    },
+    {
+      "question": "List daily balances for account 1 between January 1 and January 5.",
+      "sql": "SELECT date, start_balance, end_balance FROM daily_account_value WHERE account_id = 1 AND date BETWEEN '2024-01-01' AND '2024-01-05';"
+    },
+    {
+      "question": "What was the AED per unit rate for USD on 2024-01-02?",
+      "sql": "SELECT aed_per_unit FROM fx_rates WHERE base_currency = 'USD' AND rate_date = '2024-01-02';"
+    },
+    {
+      "question": "List all currencies available on 2024-01-01.",
+      "sql": "SELECT base_currency FROM fx_rates WHERE rate_date = '2024-01-01';"
+    },
+    {
+      "question": "What is the average AED per unit rate across all currencies on 2024-01-01?",
+      "sql": "SELECT AVG(aed_per_unit) FROM fx_rates WHERE rate_date = '2024-01-01';"
+    },
+    {
+      "question": "How many merchants are in each category?",
+      "sql": "SELECT merchant_category, COUNT(*) AS num_merchants FROM merchants GROUP BY merchant_category;"
+    },
+    {
+      "question": "List all merchant names in the 'Groceries' category.",
+      "sql": "SELECT merchant_name FROM merchants WHERE merchant_category = 'Groceries';"
+    },
+    {
+      "question": "Count merchants by country.",
+      "sql": "SELECT country, COUNT(*) FROM merchants GROUP BY country;"
+    },
+    {
+      "question": "How many registered users do we have in total?",
+      "sql": "SELECT COUNT(*) AS user_count FROM users"
+    },
+    {
+      "question": "Show the three most recently created users (by created_at).",
+      "sql": "SELECT user_id, full_name, email, created_at FROM users ORDER BY created_at DESC, user_id DESC LIMIT 3;"
+    },
+    {
+      "question": "Find users whose name contains 'ali' (case-insensitive).",
+      "sql": "SELECT user_id, full_name, email FROM users WHERE full_name LIKE '%' || 'ali' || '%' COLLATE NOCASE ORDER BY full_name;"
+    },
+    {
+      "question": "How many accounts are currently open (not closed)?",
+      "sql": "SELECT COUNT(*) AS open_accounts FROM accounts WHERE closed_at IS NULL;"
+    },
+    {
+      "question": "List all 'savings' accounts with their owners’ names.",
+      "sql": "SELECT a.account_id, a.account_name, u.full_name, a.currency FROM accounts a JOIN users u ON a.user_id = u.user_id WHERE a.account_type = 'savings' ORDER BY a.account_id;"
+    },
+    {
+      "question": "How many accounts exist per currency?",
+      "sql": "SELECT currency, COUNT(*) AS cnt FROM accounts GROUP BY currency ORDER BY cnt DESC;"
+    },
+    {
+      "question": "Which accounts have a negative starting balance?",
+      "sql": "SELECT account_id, user_id, account_name, starting_balance FROM accounts WHERE starting_balance < 0 ORDER BY starting_balance;"
+    },
+    {
+      "question": "Show all accounts owned by 'Allison Hill'.",
+      "sql": "SELECT a.account_id, a.account_type, a.account_name, a.currency, a.opened_at, a.closed_at FROM accounts a JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE ORDER BY a.account_id;"
+    },
+    {
+      "question": "How many transactions did Allison Hill have in January 2024?",
+      "sql": "SELECT COUNT(*) AS transaction_count FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01';"
+    },
+    {
+      "question": "List Allison’s January 2024 debit transactions with merchant and amount.",
+      "sql": "SELECT t.txn_id, t.merchant_name, t.amount_aed, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "Show Allison’s top 5 merchants by AED spend in January 2024.",
+      "sql": "SELECT COALESCE(t.merchant_name,'(unknown)') AS merchant, SUM(t.amount_aed) AS total_spend FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY merchant ORDER BY total_spend DESC LIMIT 5;"
+    },
+    {
+      "question": "Give me Allison’s total debit amount per day in January 2024.",
+      "sql": "SELECT DATE(t.occurred_at) AS day, SUM(t.amount_aed) AS total_debit_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY day ORDER BY day;"
+    },
+    {
+      "question": "What categories did Allison spend on in January 2024 and how much in each?",
+      "sql": "SELECT COALESCE(t.merchant_category,'(uncategorized)') AS category, SUM(t.amount_aed) AS total_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY category ORDER BY total_aed DESC;"
+    },
+    {
+      "question": "What’s Allison’s average purchase size in January 2024?",
+      "sql": "SELECT AVG(t.amount_aed) AS avg_purchase_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.txn_type = 'purchase' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01';"
+    },
+    {
+      "question": "When was Allison’s first and last transaction in January 2024?",
+      "sql": "SELECT MIN(t.occurred_at) AS first_txn, MAX(t.occurred_at) AS last_txn FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01';"
+    },
+    {
+      "question": "Split Allison’s January 2024 debit spending into domestic (UAE) vs international.",
+      "sql": "SELECT CASE WHEN t.country = 'UAE' THEN 'domestic' ELSE 'international' END AS region, SUM(t.amount_aed) AS total_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY region ORDER BY total_aed DESC;"
+    },
+    {
+      "question": "Did Allison receive any refunds in January 2024? Show amounts and merchants.",
+      "sql": "SELECT t.txn_id, t.merchant_name, t.amount_aed, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.txn_type = 'refund' AND t.direction = 'credit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "Show Allison’s rent or bill payments in January 2024.",
+      "sql": "SELECT t.txn_id, t.merchant_name, t.merchant_category, t.amount_aed, t.description, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.txn_type = 'bill_payment' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "Show how Allison’s checking account balance changed over her first 10 January transactions.",
+      "sql": "SELECT t.txn_id, t.occurred_at, t.direction, t.amount_aed, t.running_balance_after FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND a.account_type = 'checking' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at, t.txn_id LIMIT 10;"
+    },
+    {
+      "question": "Which accounts does Allison currently have open?",
+      "sql": "SELECT a.account_id, a.account_type, a.account_name, a.currency, a.opened_at FROM accounts a JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND a.closed_at IS NULL ORDER BY a.account_id;"
+    },
+    {
+      "question": "For Allison’s January 2024 purchases, confirm the merchant category using the merchants table.",
+      "sql": "SELECT t.txn_id, t.merchant_name, m.merchant_category AS category_dim, t.merchant_category AS category_txn, t.amount_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id JOIN merchants m ON m.merchant_name = t.merchant_name WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.amount_aed DESC LIMIT 10;"
+    },
+    {
+      "question": "Did Allison make any non-AED transactions in January 2024? Show currency, FX rate, and AED amount.",
+      "sql": "SELECT t.txn_id, t.currency, t.fx_rate, t.amount, t.amount_aed, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' AND t.currency <> 'AED';"
+    },
+    {
+      "question": "How much salary did Allison receive in January 2024?",
+      "sql": "SELECT SUM(t.amount_aed) AS total_salary_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.txn_type = 'salary' AND t.direction = 'credit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01';"
+    },
+    {
+      "question": "List Allison’s pending transactions in January 2024.",
+      "sql": "SELECT t.txn_id, t.amount_aed, t.merchant_name, t.status, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.status = 'pending' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "Flag Allison’s January 2024 purchases above AED 1,000.",
+      "sql": "SELECT t.txn_id, t.amount_aed, t.merchant_name, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.amount_aed > 1000 AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.amount_aed DESC;"
+    },
+    {
+      "question": "Show Allison’s ATM withdrawals in January 2024.",
+      "sql": "SELECT t.txn_id, t.amount_aed, t.city, t.description, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.txn_type = 'atm_withdrawal' AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "Summarize Allison’s January 2024 internal transfers by transfer group.",
+      "sql": "SELECT t.transfer_group_id, SUM(t.amount_aed) AS total_aed, COUNT(*) AS txns FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.transfer_group_id IS NOT NULL AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY t.transfer_group_id ORDER BY total_aed DESC;"
+    },
+    {
+      "question": "Find Allison’s January 2024 purchases at merchants starting with 'AD'.",
+      "sql": "SELECT t.txn_id, t.merchant_name, t.amount_aed, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.merchant_name LIKE 'AD%' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "Create a January 2024 statement for Allison: date, merchant, type, direction, amount AED, running balance.",
+      "sql": "SELECT DATE(t.occurred_at) AS date, COALESCE(t.merchant_name,'(unknown)') AS merchant, t.txn_type, t.direction, t.amount_aed, t.running_balance_after FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at, t.txn_id;"
+    },
+    {
+      "question": "What were Allison’s start and end balances for account_id=1 on 2024‑01‑03?",
+      "sql": "SELECT date, start_balance, end_balance, total_credits, total_debits, fees_charged, interest_accrued FROM daily_account_value dav JOIN accounts a ON dav.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND dav.account_id = 1 AND date = '2024-01-03';"
+    },
+    {
+      "question": "Show Allison’s daily end balances for account_id=1 across January 2024.",
+      "sql": "SELECT date, end_balance FROM daily_account_value dav JOIN accounts a ON dav.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND dav.account_id = 1 AND date >= '2024-01-01' AND date < '2024-02-01' ORDER BY date;"
+    },
+    {
+      "question": "Total fees charged and interest accrued for Allison’s account_id=1 in January 2024.",
+      "sql": "SELECT SUM(fees_charged) AS total_fees, SUM(interest_accrued) AS total_interest FROM daily_account_value dav JOIN accounts a ON dav.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND dav.account_id = 1 AND date >= '2024-01-01' AND date < '2024-02-01';"
+    },
+    {
+      "question": "List AED exchange rates for USD, EUR, GBP, and SAR on 2024-01-01.",
+      "sql": "SELECT base_currency, aed_per_unit FROM fx_rates WHERE rate_date = '2024-01-01' AND base_currency IN ('USD','EUR','GBP','SAR') ORDER BY base_currency;"
+    },
+    {
+      "question": "What is the latest available AED per USD rate in January 2024?",
+      "sql": "SELECT aed_per_unit FROM fx_rates WHERE base_currency = 'USD' AND rate_date >= '2024-01-01' AND rate_date < '2024-02-01' ORDER BY rate_date DESC LIMIT 1;"
+    },
+    {
+      "question": "Show the USD→AED rate series for the first 5 days of 2024.",
+      "sql": "SELECT rate_date, aed_per_unit FROM fx_rates WHERE base_currency = 'USD' AND rate_date >= '2024-01-01' AND rate_date <= '2024-01-05' ORDER BY rate_date;"
+    },
+    {
+      "question": "For each non-AED transaction in January 2024, show its currency, fx_rate on that day (if available), and AED amount.",
+      "sql": "SELECT t.txn_id, t.currency, t.fx_rate, fr.aed_per_unit AS ref_rate, t.amount, t.amount_aed, DATE(t.occurred_at) AS rate_day FROM transactions t LEFT JOIN fx_rates fr ON fr.base_currency = t.currency AND fr.rate_date = DATE(t.occurred_at) WHERE t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' AND t.currency <> 'AED' ORDER BY t.txn_id;"
+    },
+    {
+      "question": "List all merchants in UAE with their categories.",
+      "sql": "SELECT merchant_name, merchant_category FROM merchants WHERE country = 'UAE' ORDER BY merchant_name;"
+    },
+    {
+      "question": "Which merchant categories exist (distinct) in the dimension table?",
+      "sql": "SELECT DISTINCT merchant_category FROM merchants ORDER BY merchant_category;"
+    },
+    {
+      "question": "Find merchants whose name starts with 'Lu' (case-insensitive).",
+      "sql": "SELECT merchant_name, merchant_category FROM merchants WHERE merchant_name LIKE 'Lu%' COLLATE NOCASE ORDER BY merchant_name;"
+    },
+    {
+      "question": "Show transactions that have a merchant_name but no merchant_category recorded (data quality check).",
+      "sql": "SELECT txn_id, merchant_name, merchant_category, amount_aed, occurred_at FROM transactions WHERE merchant_name IS NOT NULL AND merchant_category IS NULL ORDER BY occurred_at;"
+    },
+    {
+      "question": "Which transactions have neither merchant_name nor merchant_category?",
+      "sql": "SELECT txn_id, amount_aed, description, occurred_at FROM transactions WHERE merchant_name IS NULL AND merchant_category IS NULL ORDER BY occurred_at;"
+    },
+    {
+      "question": "Show any transactions whose posted_at is earlier than occurred_at (should rarely happen).",
+      "sql": "SELECT txn_id, occurred_at, posted_at FROM transactions WHERE posted_at < occurred_at ORDER BY occurred_at;"
+    },
+    {
+      "question": "Find card payments for Allison in January 2024 that are still pending.",
+      "sql": "SELECT t.txn_id, t.amount_aed, t.merchant_name, t.status FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.txn_type = 'card_payment' AND t.status = 'pending' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01';"
+    },
+    {
+      "question": "How many transactions per status (pending/posted/reversed) did Allison have in January 2024?",
+      "sql": "SELECT t.status, COUNT(*) AS cnt FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY t.status ORDER BY cnt DESC;"
+    },
+    {
+      "question": "What was Allison’s largest single debit in January 2024?",
+      "sql": "SELECT t.txn_id, t.amount_aed, t.merchant_name, t.txn_type, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.amount_aed DESC LIMIT 1;"
+    },
+    {
+      "question": "Return the first 10 January 2024 transactions where the description mentions 'ATM' (any case).",
+      "sql": "SELECT t.txn_id, t.description, t.amount_aed, t.occurred_at FROM transactions t WHERE t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' AND t.description LIKE '%' || 'atm' || '%' COLLATE NOCASE ORDER BY t.occurred_at, t.txn_id LIMIT 10;"
+    },
+    {
+      "question": "For Allison, list January 2024 credits by source type (salary, refund, interest, etc.).",
+      "sql": "SELECT t.txn_type, SUM(t.amount_aed) AS total_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'credit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY t.txn_type ORDER BY total_aed DESC;"
+    },
+    {
+      "question": "Find Allison’s transactions in January 2024 where the running balance after fell below AED 10,000.",
+      "sql": "SELECT t.txn_id, t.running_balance_after, t.amount_aed, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.running_balance_after < 10000 AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "Which merchants appear in both the transactions table and the merchants dimension?",
+      "sql": "SELECT DISTINCT t.merchant_name FROM transactions t INNER JOIN merchants m ON m.merchant_name = t.merchant_name WHERE t.merchant_name IS NOT NULL ORDER BY t.merchant_name;"
+    },
+    {
+      "question": "Show merchants present in transactions but missing from the merchants dimension (potentially new vendors).",
+      "sql": "SELECT DISTINCT t.merchant_name FROM transactions t LEFT JOIN merchants m ON m.merchant_name = t.merchant_name WHERE t.merchant_name IS NOT NULL AND m.merchant_name IS NULL ORDER BY t.merchant_name;"
+    },
+    {
+      "question": "For Allison, list January 2024 merchants whose total spend exceeded AED 1,000.",
+      "sql": "SELECT t.merchant_name, SUM(t.amount_aed) AS total_spend FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY t.merchant_name HAVING total_spend > 1000 ORDER BY total_spend DESC;"
+    },
+    {
+      "question": "Which of Allison’s accounts had any activity in January 2024? Return account_id and account_name.",
+      "sql": "SELECT DISTINCT a.account_id, a.account_name FROM accounts a JOIN users u ON a.user_id = u.user_id JOIN transactions t ON t.account_id = a.account_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY a.account_id;"
+    },
+    {
+      "question": "For Allison, show accounts that had no January 2024 activity.",
+      "sql": "SELECT a.account_id, a.account_name FROM accounts a JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND a.account_id NOT IN ( SELECT t.account_id FROM transactions t WHERE t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ) ORDER BY a.account_id;"
+    },
+    {
+      "question": "Search merchants containing the substring 'market' (any case).",
+      "sql": "SELECT merchant_name, merchant_category FROM merchants WHERE merchant_name LIKE '%' || 'market' || '%' COLLATE NOCASE ORDER BY merchant_name;"
+    },
+    {
+      "question": "Find all transactions in January 2024 where the description contains 'Payment'.",
+      "sql": "SELECT txn_id, description, amount_aed, occurred_at FROM transactions WHERE occurred_at >= '2024-01-01' AND occurred_at < '2024-02-01' AND description LIKE '%' || 'Payment' || '%' COLLATE NOCASE ORDER BY occurred_at, txn_id;"
+    },
+    {
+      "question": "Export a tidy January 2024 statement for Allison with date, account, merchant, type, direction, amount AED.",
+      "sql": "SELECT DATE(t.occurred_at) AS date, a.account_name, COALESCE(t.merchant_name,'(unknown)') AS merchant, t.txn_type, t.direction, t.amount_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY date, t.txn_id;"
+    },
+    {
+      "question": "How many credit vs debit transactions occurred overall in January 2024?",
+      "sql": "SELECT direction, COUNT(*) AS cnt FROM transactions WHERE occurred_at >= '2024-01-01' AND occurred_at < '2024-02-01' GROUP BY direction ORDER BY cnt DESC;"
+    },
+    {
+      "question": "What are the top 10 largest transactions (any direction) in January 2024?",
+      "sql": "SELECT txn_id, direction, amount_aed, merchant_name, occurred_at FROM transactions WHERE occurred_at >= '2024-01-01' AND occurred_at < '2024-02-01' ORDER BY amount_aed DESC LIMIT 10;"
+    },
+    {
+      "question": "Which cities appear in transactions (distinct) for January 2024?",
+      "sql": "SELECT DISTINCT city FROM transactions WHERE occurred_at >= '2024-01-01' AND occurred_at < '2024-02-01' AND city IS NOT NULL ORDER BY city;"
+    },
+    {
+      "question": "For Allison, list the number of transactions per account type in January 2024.",
+      "sql": "SELECT a.account_type, COUNT(*) AS txns FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY a.account_type ORDER BY txns DESC;"
+    },
+    {
+      "question": "For Allison, what’s the total AED credited vs debited in January 2024?",
+      "sql": "SELECT SUM(CASE WHEN t.direction = 'credit' THEN t.amount_aed ELSE 0 END) AS total_credits_aed, SUM(CASE WHEN t.direction = 'debit'  THEN t.amount_aed ELSE 0 END) AS total_debits_aed FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01';"
+    },
+    {
+      "question": "List Allison’s merchants ranked by average ticket size in January 2024 (min 2 purchases).",
+      "sql": "SELECT t.merchant_name, COUNT(*) AS purchases, AVG(t.amount_aed) AS avg_ticket FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.txn_type = 'purchase' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY t.merchant_name HAVING purchases >= 2 ORDER BY avg_ticket DESC;"
+    },
+    {
+      "question": "Which merchant categories had at least 3 purchases by Allison in January 2024?",
+      "sql": "SELECT COALESCE(t.merchant_category,'(uncategorized)') AS category, COUNT(*) AS purchases FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.txn_type = 'purchase' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' GROUP BY category HAVING purchases >= 3 ORDER BY purchases DESC;"
+    },
+    {
+      "question": "Show Allison’s purchases at merchants in Dubai in January 2024.",
+      "sql": "SELECT t.txn_id, t.merchant_name, t.amount_aed, t.city, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.direction = 'debit' AND t.txn_type = 'purchase' AND t.city = 'Dubai' AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at;"
+    },
+    {
+      "question": "What’s the total of fees charged to Allison’s accounts in January 2024 (DAV-based)?",
+      "sql": "SELECT SUM(dav.fees_charged) AS total_fees FROM daily_account_value dav JOIN accounts a ON dav.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND date >= '2024-01-01' AND date < '2024-02-01';"
+    },
+    {
+      "question": "Which of Allison’s accounts are credit cards? List name and opening date.",
+      "sql": "SELECT a.account_name, a.opened_at FROM accounts a JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND a.account_type = 'credit_card' ORDER BY a.opened_at;"
+    },
+    {
+      "question": "List Allison’s merchants that appear in the dimension table but not in her January transactions (potential favorites she didn’t use).",
+      "sql": "SELECT m.merchant_name FROM merchants m WHERE m.merchant_name NOT IN ( SELECT DISTINCT t.merchant_name FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' AND t.merchant_name IS NOT NULL ) ORDER BY m.merchant_name;"
+    },
+    {
+      "question": "Which transaction types did Allison *not* use in January 2024?",
+      "sql": "SELECT tt AS missing_type FROM ( SELECT 'purchase' AS tt UNION ALL SELECT 'atm_withdrawal' UNION ALL SELECT 'transfer_in' UNION ALL SELECT 'transfer_out' UNION ALL SELECT 'salary' UNION ALL SELECT 'refund' UNION ALL SELECT 'fee' UNION ALL SELECT 'interest' UNION ALL SELECT 'bill_payment' UNION ALL SELECT 'card_payment' UNION ALL SELECT 'cash_deposit' UNION ALL SELECT 'cheque' ) AS catalog WHERE tt NOT IN ( SELECT DISTINCT t.txn_type FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' );"
+    },
+    {
+      "question": "Show all accounts opened in 2022.",
+      "sql": "SELECT account_id, user_id, account_name, opened_at FROM accounts WHERE opened_at >= '2022-01-01' AND opened_at < '2023-01-01' ORDER BY opened_at;"
+    },
+    {
+      "question": "Which users opened more than one account?",
+      "sql": "SELECT u.user_id, u.full_name, COUNT(*) AS accounts_count FROM accounts a JOIN users u ON a.user_id = u.user_id GROUP BY u.user_id, u.full_name HAVING accounts_count > 1 ORDER BY accounts_count DESC, u.full_name;"
+    },
+    {
+      "question": "For each currency, what’s the average starting balance across accounts?",
+      "sql": "SELECT currency, AVG(starting_balance) AS avg_start FROM accounts GROUP BY currency ORDER BY currency;"
+    },
+    {
+      "question": "Find transactions that reference a merchant not present in the merchants table.",
+      "sql": "SELECT DISTINCT t.merchant_name FROM transactions t LEFT JOIN merchants m ON m.merchant_name = t.merchant_name WHERE t.merchant_name IS NOT NULL AND m.merchant_name IS NULL ORDER BY t.merchant_name;"
+    },
+    {
+      "question": "Return Allison’s January 2024 transactions with a computed sign (debit = -amount, credit = +amount).",
+      "sql": "SELECT t.txn_id, CASE WHEN t.direction='credit' THEN t.amount_aed ELSE -t.amount_aed END AS signed_amount_aed, t.direction, t.occurred_at FROM transactions t JOIN accounts a ON t.account_id = a.account_id JOIN users u ON a.user_id = u.user_id WHERE u.full_name = 'Allison Hill' COLLATE NOCASE AND t.occurred_at >= '2024-01-01' AND t.occurred_at < '2024-02-01' ORDER BY t.occurred_at, t.txn_id;"
+    }
+  ],
+  "docs": [
+    {
+      "title": "users",
+      "content": "The users table stores the list of registered users. Each user has a unique user_id, a full_name, a unique email, and a created_at timestamp representing when the user was created."
+    },
+    {
+      "title": "accounts",
+      "content": "The accounts table stores bank account information. Each account record links to a user via user_id and includes details such as account_type (checking, savings, credit card, brokerage cash), account_name, currency, the dates the account was opened and closed, and the starting_balance."
+    },
+    {
+      "title": "transactions",
+      "content": "The transactions table logs all financial transactions. Each transaction has a txn_id, is tied to an account via account_id, and includes timestamps (occurred_at, posted_at), direction (debit or credit), amount and amount_aed, optional foreign exchange rate (fx_rate), transaction type (txn_type), merchant details (merchant_name, merchant_category), location (city, country), status (pending, posted, reversed), description, optional transfer group id, and running_balance_after."
+    },
+    {
+      "title": "daily_account_value",
+      "content": "The daily_account_value table contains daily summaries for each account. Each row includes a primary key dav_id, the account_id, the date, the account's start_balance on that date, total_credits and total_debits for the day, interest_accrued and fees_charged, and the resulting end_balance."
+    },
+    {
+      "title": "fx_rates",
+      "content": "The fx_rates table stores foreign exchange rates between AED and various base currencies. Each row includes rate_date, base_currency, and aed_per_unit, representing how many AED per unit of the base currency."
+    },
+    {
+      "title": "merchants",
+      "content": "The merchants table lists known merchants. Each merchant has a merchant_id, merchant_name, merchant_category, and country."
+    }
+  ]
+}
