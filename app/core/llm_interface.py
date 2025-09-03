@@ -17,7 +17,7 @@ class BaseLLM(ABC):
     """Abstract base class for LLM providers."""
     
     @abstractmethod
-    def generate_sql(self, prompt: str, context: str) -> str:
+    def generate_sql(self, prompt: str, context: str, user_id: Optional[int] = None) -> str:
         """Generate SQL from natural language prompt and context."""
         pass
     
@@ -52,13 +52,13 @@ class OpenAILLM(BaseLLM):
         self.client = OpenAI(api_key=self.api_key)
         logger.info(f"Initialized OpenAI LLM with model: {self.model}")
     
-    def generate_sql(self, prompt: str, context: str) -> str:
+    def generate_sql(self, prompt: str, context: str, user_id: Optional[int] = None) -> str:
         """Generate SQL using OpenAI GPT."""
         try:
-            system_prompt = self._build_system_prompt()
-            user_prompt = self._build_user_prompt(prompt, context)
+            system_prompt = self._build_system_prompt(user_id)
+            user_prompt = self._build_user_prompt(prompt, context, user_id)
             
-            logger.debug(f"Generating SQL for prompt: {prompt[:100]}...")
+            logger.debug(f"Generating SQL for prompt: {prompt[:100]}... (User ID: {user_id})")
             
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -71,7 +71,7 @@ class OpenAILLM(BaseLLM):
             )
             
             sql = response.choices[0].message.content.strip()
-            logger.info(f"Successfully generated SQL for prompt: {prompt[:50]}...")
+            logger.info(f"Successfully generated SQL for prompt: {prompt[:50]}... (User ID: {user_id})")
             return self._extract_sql(sql)
             
         except Exception as e:
@@ -131,9 +131,9 @@ class OpenAILLM(BaseLLM):
             
             # Extract table aliases and names
             table_info = self._extract_table_info(sql)
-            print(f"Table info: {table_info}")
             # Find string literals using a simpler regex approach
             self._find_string_literals_with_context(sql, table_info, mappings)
+            print(f"Table info: {table_info}")
             print(f"Mappings: {mappings}")
             
             return mappings
@@ -144,24 +144,42 @@ class OpenAILLM(BaseLLM):
     
     def _extract_table_info(self, sql: str) -> Dict[str, str]:
         """Extract table names and their aliases from parsed SQL."""
-        table_info = {}  # alias -> table_name
+        table_info = {}  # unique_key -> table_name
         
         # Simple extraction - look for patterns like "FROM table_name alias" or "FROM table_name"
         sql_upper = sql.upper()
         from_matches = re.finditer(r'FROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql_upper, re.IGNORECASE)
+        print(f"from_matches: {from_matches}")
         
+        table_counter = 0
         for match in from_matches:
+            print(f"match: {match}")
             table_name = match.group(1).lower()
+            print(f"table_name: {table_name}")
             alias = match.group(2).lower() if match.group(2) else table_name
+            print(f"alias: sa{alias}, table_name: sa{table_name}")
+            
+            # Create unique key to avoid overwrites
+            unique_key = f"{alias}_{table_counter}"
+            table_info[unique_key] = table_name
+            # Also store the alias -> table mapping for easy lookup
             table_info[alias] = table_name
+            table_counter += 1
         
         # Also look for JOIN patterns
         join_matches = re.finditer(r'JOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql_upper, re.IGNORECASE)
         for match in join_matches:
             table_name = match.group(1).lower()
             alias = match.group(2).lower() if match.group(2) else table_name
+            
+            # Create unique key to avoid overwrites
+            unique_key = f"{alias}_{table_counter}"
+            table_info[unique_key] = table_name
+            # Also store the alias -> table mapping for easy lookup
             table_info[alias] = table_name
+            table_counter += 1
         
+        print(f"Final table_info: {table_info}")
         return table_info
     
     def _find_string_literals_with_context(self, sql: str, table_info: Dict[str, str], mappings: List[Dict[str, str]]):
@@ -169,7 +187,7 @@ class OpenAILLM(BaseLLM):
         try:
             processed_literals = set()  # Track processed literals to avoid duplicates
             print(f"SQL: {sql}")
-            
+            print(f"table_info: s{table_info}")
             # Pattern 1: table.column = 'value' or table.column LIKE 'value'
             pattern1 = r'(\w+)\.(\w+)\s*(?:[=<>!]+|LIKE|ILIKE|IN)\s*[\'"]([^\'"]+)[\'"]'
             matches1 = re.finditer(pattern1, sql, re.IGNORECASE)
@@ -221,6 +239,7 @@ class OpenAILLM(BaseLLM):
             # Pattern 3: column = 'value' (without table prefix)
             pattern3 = r'(?<!\.)\b(\w+)\s*(?:[=<>!]+|LIKE|ILIKE|IN)\s*[\'"]([^\'"]+)[\'"]'
             matches3 = re.finditer(pattern3, sql, re.IGNORECASE)
+            print("table_info", table_info)
             for match in matches3:
                 column_name = match.group(1).lower()
                 literal_value = match.group(2)
@@ -232,6 +251,7 @@ class OpenAILLM(BaseLLM):
                 # Try to find the table for this column from table_info
                 table_name = "unknown"
                 for alias, tbl in table_info.items():
+                    print(f"alias: {alias}, tbl: {tbl}")
                     table_name = tbl
                     break  # Use first table as default
                 
@@ -255,101 +275,113 @@ class OpenAILLM(BaseLLM):
             logger.debug(f"Error finding string literals with context: {str(e)}")
     
     def _generate_fuzzy_variations(self, literal_value: str, table_name: str, column_name: str) -> List[Dict[str, str]]:
-        """Generate fuzzy search variations for a string literal."""
+        """Generate optimized fuzzy search variations for a string literal."""
         variations = []
         
         try:
-            # Split the literal into words for individual word matching
+            # Split the literal into words for analysis
             words = literal_value.split()
-            
-            # Base pattern for the full literal (search anywhere) - PostgreSQL
             literal_lower = literal_value.lower()
             
-            # PostgreSQL ILIKE for case-insensitive search
+            # 1. Exact matches (highest priority)
             variations.append({
-                "type": "full_match",
-                "pattern": f"%{literal_lower}%",
-                "sql": f"SELECT * FROM {table_name} WHERE {column_name} ILIKE '%{literal_lower}%'"
+                "type": "exact_match",
+                "pattern": literal_value,
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE {column_name} = '{literal_value}' LIMIT 5",
+                "priority": 0  # Highest priority
             })
             
-            # Individual word patterns (search anywhere)
-            for word in words:
-                if len(word) > 2:  # Only for words longer than 2 characters
-                    word_lower = word.lower()
-                    
-                    # PostgreSQL ILIKE for case-insensitive word search
-                    variations.append({
-                        "type": "word_match",
-                        "word": word,
-                        "pattern": f"%{word_lower}%",
-                        "sql": f"SELECT * FROM {table_name} WHERE {column_name} ILIKE '%{word_lower}%'"
-                    })
+            # 2. Case-insensitive exact match
+            variations.append({
+                "type": "case_insensitive_exact",
+                "pattern": literal_value,
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE UPPER({column_name}) = UPPER('{literal_value}') LIMIT 5",
+                "priority": 0
+            })
             
-            # Add SOUNDEX matching for phonetic similarity (PostgreSQL fuzzystrmatch extension)
+            # 3. Full literal match (contains)
+            variations.append({
+                "type": "full_literal_match",
+                "pattern": f"%{literal_lower}%",
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE {column_name} ILIKE '%{literal_lower}%' LIMIT 10",
+                "priority": 1
+            })
+            
+            # 4. SOUNDEX matching for phonetic similarity
             variations.append({
                 "type": "soundex_match",
                 "pattern": f"SOUNDEX('{literal_value}')",
-                "sql": f"SELECT * FROM {table_name} WHERE SOUNDEX({column_name}) = SOUNDEX('{literal_value}')"
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE SOUNDEX({column_name}) = SOUNDEX('{literal_value}') LIMIT 10",
+                "priority": 3
             })
             
-            # Individual word SOUNDEX matching
-            for word in words:
-                if len(word) > 2:
-                    variations.append({
-                        "type": "soundex_word_match",
-                        "word": word,
-                        "pattern": f"SOUNDEX('{word}')",
-                        "sql": f"SELECT * FROM {table_name} WHERE SOUNDEX({column_name}) = SOUNDEX('{word}')"
-                    })
-            
-            # Add Levenshtein distance matching for typo tolerance (PostgreSQL fuzzystrmatch extension)
-            # Distance <= 1 for single character errors
+            # 5. Levenshtein distance matching (typo tolerance)
             variations.append({
                 "type": "levenshtein_match_1",
                 "pattern": f"levenshtein <= 1",
-                "sql": f"SELECT * FROM {table_name} WHERE levenshtein(LOWER({column_name}), LOWER('{literal_value}')) <= 1"
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE levenshtein(LOWER({column_name}), LOWER('{literal_value}')) <= 1 LIMIT 10",
+                "priority": 4
             })
             
-            # Distance <= 2 for up to two character errors
             variations.append({
                 "type": "levenshtein_match_2",
                 "pattern": f"levenshtein <= 2",
-                "sql": f"SELECT * FROM {table_name} WHERE levenshtein(LOWER({column_name}), LOWER('{literal_value}')) <= 2"
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE levenshtein(LOWER({column_name}), LOWER('{literal_value}')) <= 2 LIMIT 15",
+                "priority": 5
             })
             
-            # Individual word Levenshtein matching
-            for word in words:
-                if len(word) > 3:  # Only for words longer than 3 characters
-                    variations.append({
-                        "type": "levenshtein_word_match",
-                        "word": word,
-                        "pattern": f"levenshtein <= 1",
-                        "sql": f"SELECT * FROM {table_name} WHERE levenshtein(LOWER({column_name}), LOWER('{word}')) <= 1"
-                    })
-            
-            # Add similarity matching (PostgreSQL pg_trgm extension)
-            # Trigram similarity (good for partial matches)
+            # 6. Trigram similarity matching
             variations.append({
                 "type": "similarity_match",
                 "pattern": f"similarity >= 0.3",
-                "sql": f"SELECT * FROM {table_name} WHERE similarity({column_name}, '{literal_value}') >= 0.3"
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE similarity({column_name}, '{literal_value}') >= 0.3 LIMIT 10",
+                "priority": 6
             })
             
-            # Word similarity for individual words
-            for word in words:
-                if len(word) > 3:
-                    variations.append({
-                        "type": "word_similarity_match",
-                        "word": word,
-                        "pattern": f"word_similarity >= 0.4",
-                        "sql": f"SELECT * FROM {table_name} WHERE word_similarity({column_name}, '{word}') >= 0.4"
-                    })
+            # 7. Word similarity matching
+            variations.append({
+                "type": "word_similarity_match",
+                "pattern": f"word_similarity >= 0.4",
+                "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE word_similarity({column_name}, '{literal_value}') >= 0.4 LIMIT 10",
+                "priority": 7
+            })
             
-
+            # 8. If multi-word, try primary word matching
+            if len(words) > 1:
+                # Use the longest word as it's usually the most distinctive
+                longest_word = max(words, key=len)
+                if len(longest_word) > 3:  # Only meaningful words
+                    variations.append({
+                        "type": "primary_word_match", 
+                        "word": longest_word,
+                        "pattern": f"%{longest_word.lower()}%",
+                        "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE {column_name} ILIKE '%{longest_word.lower()}%' LIMIT 10",
+                        "priority": 2
+                    })
+                    
+                    # SOUNDEX for primary word
+                    variations.append({
+                        "type": "soundex_word_match",
+                        "word": longest_word,
+                        "pattern": f"SOUNDEX('{longest_word}')",
+                        "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE SOUNDEX({column_name}) = SOUNDEX('{longest_word}') LIMIT 10",
+                        "priority": 4
+                    })
+                    
+                    # Levenshtein for primary word
+                    variations.append({
+                        "type": "levenshtein_word_match",
+                        "word": longest_word,
+                        "pattern": f"levenshtein <= 1",
+                        "sql": f"SELECT DISTINCT {column_name} FROM {table_name} WHERE levenshtein(LOWER({column_name}), LOWER('{longest_word}')) <= 1 LIMIT 10",
+                        "priority": 5
+                    })
             
         except Exception as e:
             logger.debug(f"Error generating fuzzy variations: {str(e)}")
         
+        # Sort by priority (lower number = higher priority)
+        variations.sort(key=lambda x: x.get("priority", 999))
         return variations
     
 
@@ -360,185 +392,127 @@ class OpenAILLM(BaseLLM):
         
         try:
             for mapping in string_mappings:
-                literal = mapping.get("literal", "")
-                table = mapping.get("table", "")
-                column = mapping.get("column", "")
-                fuzzy_variations = mapping.get("fuzzy_variations", [])
+                literal = mapping["literal"]
+                table = mapping["table"]
+                column = mapping["column"]
+                fuzzy_variations = mapping["fuzzy_variations"]
                 
-                if not fuzzy_variations or table == "unknown":
-                    continue
+                print(f"Processing literal: '{literal}' in {table}.{column}")
                 
-                logger.debug(f"Testing fuzzy variations for literal: {literal}")
-                
-                # Execute each fuzzy variation and collect results
+                # Execute each variation and collect unique merchant names
+                all_merchant_names = set()
                 variation_results = []
+                
                 for variation in fuzzy_variations:
                     try:
-                        query_sql = variation.get("sql", "")
-                        if query_sql:
-                            result = self.db_connector.execute_query(query_sql)
-                            print(f"Result: {result}")
+                        result = self.db_connector.execute_query(variation["sql"])
+                        row_count = len(result["data"])
+                        
+                        # Extract unique merchant names from results
+                        merchant_names = set()
+                        if result["data"] and result["columns"]:
+                            # Find the column index for merchant names
+                            col_index = 0
+                            if column in result["columns"]:
+                                col_index = result["columns"].index(column)
                             
-                            # Count the number of matching rows
-                            row_count = result.get("row_count", 0)
-                            if row_count > 0:
-                                variation_results.append({
+                            for row in result["data"]:
+                                if row and len(row) > col_index and row[col_index]:
+                                    merchant_names.add(str(row[col_index]))
+                        
+                        all_merchant_names.update(merchant_names)
+                        
+                        variation_results.append({
                                     "variation": variation,
                                     "row_count": row_count,
-                                    "sample_data": result.get("data", [])[:5],  # First 5 rows as sample
-                                    "columns": result.get("columns", [])
-                                })
-                                logger.debug(f"Query '{variation.get('pattern')}' found {row_count} matches")
+                            "merchant_names": merchant_names,
+                            "sample_data": result["data"][:5]  # Keep only 5 samples
+                        })
+                        
+                        print(f"Variation {variation['type']}: {row_count} rows, {len(merchant_names)} unique names")
+                        
+                        # Stop early if we found exact matches
+                        if variation["type"] in ["exact_match", "case_insensitive_exact"] and row_count > 0:
+                            print(f"Found exact match, stopping search")
+                            break
                     
                     except Exception as e:
-                        logger.debug(f"Error executing fuzzy query: {str(e)}")
+                        print(f"Error executing variation {variation['type']}: {str(e)}")
                         continue
                 
-                # Find the best variation (most specific with results)
-                if variation_results:
-                    # Sort by specificity: word matches are more specific than full matches
-                    # and prefer variations with reasonable result counts (not too many, not too few)
-                    def score_variation(var_result):
-                        variation = var_result["variation"]
-                        row_count = var_result["row_count"]
-                        
-                        # Base score
-                        score = 0
-                        
-                        # Prefer word matches over full matches (more specific)
-                        if variation.get("type") == "word_match":
-                            score += 10
-                        
-                        # Prefer reasonable result counts (1-100 results)
-                        if 1 <= row_count <= 10:
-                            score += 20
-                        elif 11 <= row_count <= 50:
-                            score += 15
-                        elif 51 <= row_count <= 100:
-                            score += 10
-                        elif row_count > 100:
-                            score += 5
-                        
-                        return score
+                if not variation_results:
+                    continue
+                
+                # Score merchant names based on similarity to original literal
+                def score_merchant_name(name: str) -> float:
+                    """Score a merchant name based on similarity to the original literal."""
+                    name_lower = name.lower()
+                    literal_lower = literal.lower()
                     
-                    # Sort by score (highest first)
-                    variation_results.sort(key=score_variation, reverse=True)
-                    best_variation = variation_results[0]
+                    # Exact match (highest score)
+                    if name_lower == literal_lower:
+                        return 100.0
                     
-                    # Find the best matching value from the sample data
-                    best_match_value = self._find_best_matching_value(
-                        literal, 
-                        best_variation["sample_data"], 
-                        best_variation["columns"], 
-                        column
-                    )
+                    # Case-insensitive exact match
+                    if name.lower() == literal.lower():
+                        return 95.0
+                    
+                    # Contains the full literal
+                    if literal_lower in name_lower:
+                        return 80.0 + (len(literal) / len(name)) * 10  # Bonus for higher ratio
+                    
+                    # Literal contains the name (partial match)
+                    if name_lower in literal_lower:
+                        return 70.0 + (len(name) / len(literal)) * 10
+                    
+                    # Word-level matching
+                    literal_words = set(literal_lower.split())
+                    name_words = set(name_lower.split())
+                    
+                    if literal_words & name_words:  # Has common words
+                        common_ratio = len(literal_words & name_words) / len(literal_words | name_words)
+                        return 50.0 + common_ratio * 30
+                    
+                    return 0.0
+                
+                # Find the best merchant name
+                best_merchant_name = None
+                best_score = 0.0
+                print("all_merchant_names", all_merchant_names)
+                for name in all_merchant_names:
+                    print("name", name)
+                    score = score_merchant_name(name)
+                    print("score", score)
+                    if score > best_score:
+                        print("best_score", best_score)
+                        best_score = score
+                        best_merchant_name = name
+                
+                print(f"Best match: '{best_merchant_name}' (score: {best_score})")
+                
+                if best_merchant_name and best_score > 50.0:  # Only accept good matches
+                    # Find which variation found this merchant name
+                    best_variation = None
+                    for var_result in variation_results:
+                        if best_merchant_name in var_result["merchant_names"]:
+                            best_variation = var_result
+                            break
                     
                     best_matches.append({
                         "original_literal": literal,
                         "table": table,
                         "column": column,
-                        "best_variation": best_variation["variation"],
-                        "best_match_value": best_match_value,
-                        "match_count": best_variation["row_count"],
-                        "sample_matches": best_variation["sample_data"],
-                        "all_variations_tested": len(fuzzy_variations),
-                        "successful_variations": len(variation_results)
+                        "best_match_value": best_merchant_name,
+                        "match_score": best_score,
+                        "variation_used": best_variation["variation"]["type"] if best_variation else "unknown",
+                        "total_variations_tested": len(fuzzy_variations),
+                        "unique_names_found": len(all_merchant_names)
                     })
-                    
-                    logger.info(f"Best match for '{literal}': {best_variation['variation']['pattern']} ({best_variation['row_count']} results)")
         
         except Exception as e:
-            logger.error(f"Error executing fuzzy queries: {str(e)}")
+            logger.error(f"Error in fuzzy matching: {str(e)}")
         
         return best_matches
-    
-    def _find_best_matching_value(self, original_literal: str, sample_data: List, columns: List[str], target_column: str) -> Optional[str]:
-        """Find the best matching value from the sample data."""
-        try:
-            if not sample_data or not columns:
-                return None
-            
-            # Find the index of the target column
-            try:
-                column_index = columns.index(target_column)
-            except ValueError:
-                # If exact match not found, try case-insensitive search
-                column_index = None
-                for i, col in enumerate(columns):
-                    if col.lower() == target_column.lower():
-                        column_index = i
-                        break
-                
-                if column_index is None:
-                    return None
-            
-            # Extract all values from the target column
-            column_values = []
-            for row in sample_data:
-                if len(row) > column_index and row[column_index] is not None:
-                    column_values.append(str(row[column_index]))
-            
-            if not column_values:
-                return None
-            
-            # Find the best match using simple string similarity
-            original_lower = original_literal.lower()
-            best_match = None
-            best_score = -1
-            
-            for value in column_values:
-                value_lower = value.lower()
-                
-                # Calculate similarity score
-                score = self._calculate_string_similarity(original_lower, value_lower)
-                
-                if score > best_score:
-                    best_score = score
-                    best_match = value
-            
-            return best_match
-            
-        except Exception as e:
-            logger.debug(f"Error finding best matching value: {str(e)}")
-            return None
-    
-    def _calculate_string_similarity(self, str1: str, str2: str) -> float:
-        """Calculate similarity between two strings."""
-        try:
-            # Simple similarity based on common characters and length
-            if str1 == str2:
-                return 1.0
-            
-            if not str1 or not str2:
-                return 0.0
-            
-            # Check if one string contains the other
-            if str1 in str2 or str2 in str1:
-                return 0.8
-            
-            # Count common characters
-            common_chars = 0
-            str1_chars = set(str1.lower())
-            str2_chars = set(str2.lower())
-            
-            for char in str1_chars:
-                if char in str2_chars:
-                    common_chars += 1
-            
-            # Calculate similarity based on common characters and length difference
-            max_len = max(len(str1), len(str2))
-            char_similarity = common_chars / max_len if max_len > 0 else 0
-            
-            # Penalize for length difference
-            len_diff = abs(len(str1) - len(str2))
-            len_penalty = len_diff / max_len if max_len > 0 else 0
-            
-            similarity = char_similarity - (len_penalty * 0.3)
-            return max(0.0, min(1.0, similarity))
-            
-        except Exception as e:
-            logger.debug(f"Error calculating string similarity: {str(e)}")
-            return 0.0
     
     def generate_summary(self, question: str, sql: str, results: Dict[str, Any]) -> str:
         """Generate a natural language summary of query results using OpenAI GPT."""
@@ -618,30 +592,114 @@ class OpenAILLM(BaseLLM):
             logger.error(f"Error formatting results for summary: {str(e)}")
             return f"Error formatting results: {str(e)}"
     
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, user_id: Optional[int]) -> str:
         """Build the system prompt for SQL generation."""
-        return """
+        user_context = ""
+        if user_id is not None and user_id > 0:
+            user_context = f"""
+        
+        IMPORTANT USER CONTEXT:
+        - Current user ID: {user_id}
+        - ALWAYS include user_id = {user_id} in WHERE clauses for user-specific data
+        - For tables that have user_id column, filter by user_id = {user_id}
+        - Use exact equality (=) instead of LIKE when you have exact values
+        - Avoid unnecessary LOWER() functions when doing exact matches
+        """
+        
+        return f"""
         You are an expert PostgreSQL developer. Generate accurate PostgreSQL SQL queries from natural language questions.
         
         PostgreSQL Guidelines:
         1. Use PostgreSQL syntax and functions only
-        2. For case-insensitive comparisons: LOWER() function or ILIKE operator
-        3. Use ILIKE for case-insensitive pattern matching
-        4. Include appropriate JOINs when needed
-        5. Use meaningful table aliases
-        6. Return only the SQL query, no explanations
-        7. Use the provided schema and context information
+        2. For exact string matches: Use = operator (e.g., merchant_name = 'PlayStation Plus')
+        3. For pattern matching: Use ILIKE operator (e.g., merchant_name ILIKE '%playstation%')
+        4. NEVER use LOWER() with LIKE for exact string matches
+        5. NEVER use LIKE without wildcards (%, _) - use = instead
+        6. Include appropriate JOINs when needed
+        7. Use meaningful table aliases
+        8. Return only the SQL query, no explanations
+        9. Use the provided schema and context information
+        10. For date operations, use PostgreSQL date functions like EXTRACT(), DATE(), NOW(), etc.
+        
+        CRITICAL RULES FOR STRING MATCHING:
+        - If you have an exact merchant name like 'PlayStation Plus', use: merchant_name = 'PlayStation Plus'
+        - If you need case-insensitive exact match, use: UPPER(merchant_name) = UPPER('PlayStation Plus')
+        - Only use LIKE with wildcards: merchant_name ILIKE '%playstation%'
+        - NEVER combine LOWER() with LIKE for exact values
+        
+        DATE HANDLING RULES:
+        - Use current date information provided in the user prompt
+        - ONLY add date filters if the user explicitly mentions dates or time periods
+        - If user says "this month": EXTRACT(YEAR FROM date_col) = current_year AND EXTRACT(MONTH FROM date_col) = current_month
+        - If user says "last month": Use appropriate month/year calculation
+        - If user says "today": DATE(date_col) = 'YYYY-MM-DD'
+        - If user says "this year": EXTRACT(YEAR FROM date_col) = current_year
+        - If NO date/time mentioned: DO NOT add any date filters to the query
+        - Always use proper PostgreSQL date functions and formats when date filtering is needed
+        {user_context}
         
         Always wrap your SQL response in ```sql and ``` tags.
         """
     
-    def _build_user_prompt(self, question: str, context: str) -> str:
+    def _build_user_prompt(self, question: str, context: str, user_id: Optional[int]) -> str:
         """Build the user prompt with question and context."""
+        from datetime import datetime
+        
+        # Get current date information
+        current_date = datetime.now()
+        current_date_str = current_date.strftime("%Y-%m-%d")
+        current_datetime_str = current_date.strftime("%Y-%m-%d %H:%M:%S")
+        current_year = current_date.year
+        current_month = current_date.month
+        current_day = current_date.day
+        
+        user_info = ""
+        if user_id is not None and user_id > 0:
+            user_info = f"\nCurrent User ID: {user_id} (include user_id = {user_id} in WHERE clause for user-specific data)\n"
+        
+        date_context = f"""
+Current Date Information:
+- Today's Date: {current_date_str}
+- Current DateTime: {current_datetime_str}
+- Current Year: {current_year}
+- Current Month: {current_month}
+- Current Day: {current_day}
+
+IMPORTANT DATE FILTERING RULES:
+- ONLY add date/time filters if the user explicitly mentions dates or time periods
+- Examples that NEED date filters:
+  * "How much did I spend this month?" → Add month filter
+  * "Show transactions from last week" → Add week filter  
+  * "What did I buy today?" → Add today filter
+  * "My expenses this year" → Add year filter
+- Examples that DO NOT need date filters:
+  * "How much did I spend on PlayStation?" → No date filter
+  * "Show all my transactions" → No date filter
+  * "What stores do I shop at?" → No date filter
+  * "My total spending" → No date filter
+
+Use this date information for relative date queries like:
+- "this month" = WHERE EXTRACT(YEAR FROM date_column) = {current_year} AND EXTRACT(MONTH FROM date_column) = {current_month}
+- "this year" = WHERE EXTRACT(YEAR FROM date_column) = {current_year}
+- "today" = WHERE DATE(date_column) = '{current_date_str}'
+- "last month" = WHERE EXTRACT(YEAR FROM date_column) = {current_year} AND EXTRACT(MONTH FROM date_column) = {current_month - 1 if current_month > 1 else 12}
+"""
+        
         return f"""
         Context (Database Schema, Documentation, and Examples):
         {context}
-        
+        {user_info}
+        {date_context}
         Question: {question}
+        
+        IMPORTANT: When generating SQL:
+        - Use = for exact matches (merchant_name = 'PlayStation Plus')
+        - Use ILIKE with wildcards for pattern matching (merchant_name ILIKE '%playstation%')
+        - DO NOT use LOWER() with LIKE for exact strings
+        - DO NOT use LIKE without wildcards
+        - Use the current date information above for relative date queries
+        - ONLY add date/time filters if user explicitly mentions dates or time periods
+        - If no date/time mentioned in question, do NOT add any date filters
         
         Generate a SQL query to answer this question using the provided context.
         """

@@ -5,6 +5,7 @@ Main FastAPI application for Vanna.AI.
 import sys
 import os
 from pathlib import Path
+from typing import Optional
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
@@ -43,21 +44,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global VannaAI instance
-vanna_instance = None
+# Global VannaAI instances per user
+vanna_instances = {}
 
 
-def get_vanna() -> VannaAI:
-    """Dependency to get VannaAI instance."""
-    global vanna_instance
-    if vanna_instance is None:
+def get_vanna(user_id: Optional[int] = None) -> VannaAI:
+    """Dependency to get VannaAI instance for a specific user."""
+    global vanna_instances
+    
+    # Use 0 as default user_id for anonymous
+    effective_user_id = user_id if user_id is not None else 0
+    
+    if effective_user_id not in vanna_instances:
         try:
-            vanna_instance = VannaAI()
-            logger.info("VannaAI instance initialized for API")
+            vanna_instances[effective_user_id] = VannaAI(user_id=effective_user_id)
+            logger.info(f"VannaAI instance initialized for user: {effective_user_id}")
         except Exception as e:
-            logger.error(f"Failed to initialize VannaAI: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to initialize VannaAI: {str(e)}")
-    return vanna_instance
+            logger.error(f"Failed to initialize VannaAI for user {effective_user_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to initialize VannaAI for user {effective_user_id}: {str(e)}")
+    
+    return vanna_instances[effective_user_id]
 
 
 @app.get("/")
@@ -91,10 +97,12 @@ async def health_check():
 # === Query Endpoints ===
 
 @app.post("/ask")
-async def ask_question(request: QuestionRequest, vanna: VannaAI = Depends(get_vanna)):
+async def ask_question(request: QuestionRequest):
     """Generate SQL from natural language question and optionally execute it."""
     try:
-        logger.info(f"API request: {request.question[:100]}...")
+        logger.info(f"API request from user {request.user_id}: {request.question[:100]}...")
+        
+        vanna = get_vanna(request.user_id)
         
         result = vanna.ask(
             question=request.question,
@@ -103,7 +111,7 @@ async def ask_question(request: QuestionRequest, vanna: VannaAI = Depends(get_va
             max_context_length=request.max_context_length
         )
         
-        return {"success": True, "result": result}
+        return {"success": True, "result": result, "user_id": vanna.get_user_id()}
     
     except VannaException as e:
         logger.error(f"Vanna error in ask: {str(e)}")
@@ -114,11 +122,12 @@ async def ask_question(request: QuestionRequest, vanna: VannaAI = Depends(get_va
 
 
 @app.post("/execute")
-async def execute_sql(request: ExecuteSQLRequest, vanna: VannaAI = Depends(get_vanna)):
+async def execute_sql(request: ExecuteSQLRequest):
     """Execute SQL query on connected database."""
     try:
+        vanna = get_vanna(request.user_id)
         result = vanna.run_sql(request.sql)
-        return {"success": True, "result": result}
+        return {"success": True, "result": result, "user_id": vanna.get_user_id()}
     
     except VannaException as e:
         logger.error(f"Vanna error in execute: {str(e)}")
@@ -129,11 +138,12 @@ async def execute_sql(request: ExecuteSQLRequest, vanna: VannaAI = Depends(get_v
 
 
 @app.post("/explain")
-async def explain_sql(request: ExecuteSQLRequest, vanna: VannaAI = Depends(get_vanna)):
+async def explain_sql(request: ExecuteSQLRequest):
     """Get explanation for SQL query."""
     try:
+        vanna = get_vanna(request.user_id)
         explanation = vanna.explain_sql(request.sql)
-        return {"success": True, "explanation": explanation}
+        return {"success": True, "explanation": explanation, "user_id": vanna.get_user_id()}
     
     except VannaException as e:
         logger.error(f"Vanna error in explain: {str(e)}")
@@ -146,11 +156,12 @@ async def explain_sql(request: ExecuteSQLRequest, vanna: VannaAI = Depends(get_v
 # === Training Endpoints ===
 
 @app.post("/train/ddl")
-async def train_ddl(request: TrainDDLRequest, vanna: VannaAI = Depends(get_vanna)):
+async def train_ddl(request: TrainDDLRequest):
     """Train with DDL statement."""
     try:
+        vanna = get_vanna(request.user_id)
         doc_id = vanna.train_ddl(request.ddl_statement, request.table_name)
-        return {"success": True, "document_id": doc_id, "message": "DDL training data added"}
+        return {"success": True, "document_id": doc_id, "message": "DDL training data added", "user_id": vanna.get_user_id()}
     
     except VannaException as e:
         logger.error(f"Vanna error in train_ddl: {str(e)}")
@@ -161,11 +172,12 @@ async def train_ddl(request: TrainDDLRequest, vanna: VannaAI = Depends(get_vanna
 
 
 @app.post("/train/sql-pair")
-async def train_sql_pair(request: TrainSQLPairRequest, vanna: VannaAI = Depends(get_vanna)):
+async def train_sql_pair(request: TrainSQLPairRequest):
     """Train with question-SQL pair."""
     try:
+        vanna = get_vanna(request.user_id)
         doc_id = vanna.train_sql_pair(request.question, request.sql, request.explanation)
-        return {"success": True, "document_id": doc_id, "message": "SQL pair training data added"}
+        return {"success": True, "document_id": doc_id, "message": "SQL pair training data added", "user_id": vanna.get_user_id()}
     
     except VannaException as e:
         logger.error(f"Vanna error in train_sql_pair: {str(e)}")
@@ -176,15 +188,16 @@ async def train_sql_pair(request: TrainSQLPairRequest, vanna: VannaAI = Depends(
 
 
 @app.post("/train/documentation")
-async def train_documentation(request: TrainDocumentationRequest, vanna: VannaAI = Depends(get_vanna)):
+async def train_documentation(request: TrainDocumentationRequest):
     """Train with table documentation."""
     try:
+        vanna = get_vanna(request.user_id)
         doc_id = vanna.train_documentation(
             request.table_name, 
             request.description, 
             request.column_descriptions
         )
-        return {"success": True, "document_id": doc_id, "message": "Documentation training data added"}
+        return {"success": True, "document_id": doc_id, "message": "Documentation training data added", "user_id": vanna.get_user_id()}
     
     except VannaException as e:
         logger.error(f"Vanna error in train_documentation: {str(e)}")

@@ -6,6 +6,7 @@ Simple interactive Vanna.AI bot - just ask questions and get SQL answers!
 import sys
 import os
 from pathlib import Path
+from typing import Optional, Union
 
 # Add project root to path
 project_root = Path(__file__).parent
@@ -19,17 +20,45 @@ from app.utils.exceptions import VannaException
 class VannaBot:
     """Simple interactive Vanna.AI bot."""
     
-    def __init__(self):
+    def __init__(self, user_id: Optional[int] = None):
         """Initialize the bot."""
         print("🤖 Initializing Vanna.AI Bot...")
+        
+        # Get user ID if not provided
+        if user_id is None:
+            user_id = self._get_user_id()
+        
         try:
-            self.vanna = VannaAI()
+            self.user_id = user_id
+            self.vanna = VannaAI(user_id=user_id)
             self.connected_databases = []
             self.current_db = None
-            print("✅ Vanna.AI Bot ready!")
+            print(f"✅ Vanna.AI Bot ready for user: {self.user_id}!")
         except Exception as e:
             print(f"❌ Failed to initialize: {str(e)}")
             sys.exit(1)
+    
+    def _get_user_id(self) -> int:
+        """Get user ID from input."""
+        print("\n👤 User Identification")
+        print("Please provide a user ID (integer number, e.g., 1, 2, 123, etc.)")
+        
+        while True:
+            user_input = input("Enter User ID (or press Enter for '0' - anonymous): ").strip()
+            
+            if not user_input:
+                return 0  # Default anonymous user ID
+            
+            # Validate user ID (must be integer)
+            try:
+                user_id = int(user_input)
+                if user_id < 0:
+                    print("❌ User ID must be a positive integer or 0.")
+                    continue
+                return user_id
+            except ValueError:
+                print("❌ Invalid user ID. Please enter a valid integer (e.g., 1, 2, 123).")
+                continue
     
     def connect_database(self, auto_train: bool = False):
         """Connect to database using DATABASE_URL from environment."""
@@ -174,8 +203,8 @@ class VannaBot:
     
     def show_help(self):
         """Show help information."""
-        print("""
-🤖 Vanna.AI Bot Commands:
+        print(f"""
+🤖 Vanna.AI Bot Commands (User: {self.user_id}):
 
 Basic Usage:
   - Just type your question in natural language
@@ -185,6 +214,7 @@ Basic Usage:
 Special Commands:
   /connect         - Connect to database using DATABASE_URL
   /list-dbs        - List all connected databases
+  /user            - Show current user ID
   /help           - Show this help
   /stats          - Show training data statistics
   /quit           - Exit the bot
@@ -197,6 +227,12 @@ Examples:
 Note: Set DATABASE_URL in your .env file:
   DATABASE_URL=postgresql://localhost:5432/uae_banking
         """)
+    
+    def show_user(self):
+        """Show current user information."""
+        print(f"\n👤 Current User Information:")
+        print(f"User ID: {self.user_id}")
+        print(f"VannaAI User ID: {self.vanna.get_user_id()}")
     
     def show_stats(self):
         """Show training data statistics."""
@@ -294,6 +330,8 @@ Type /help for commands or /quit to exit.
                         self.show_stats()
                     elif command == '/list-dbs':
                         self.list_databases()
+                    elif command == '/user':
+                        self.show_user()
                     elif command == '/connect':
                         self.connect_database(auto_train=True)
                     else:
@@ -315,8 +353,29 @@ Type /help for commands or /quit to exit.
 
 def main():
     """Main function."""
+    import argparse
+    
+    # Set up argument parser
+    parser = argparse.ArgumentParser(
+        description="Vanna.AI Interactive Bot - Text to SQL Generation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python run.py                    # Interactive mode - will prompt for user ID
+  python run.py --user-id 1        # Start with user ID 1
+  python run.py --user-id 123      # Start with user ID 123
+        """
+    )
+    parser.add_argument(
+        '--user-id', 
+        type=int, 
+        help='User ID for this session (integer, e.g., 1, 2, 123)'
+    )
+    
+    args = parser.parse_args()
+    
     try:
-        bot = VannaBot()
+        bot = VannaBot(user_id=args.user_id)
         bot.run()
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")

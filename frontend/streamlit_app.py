@@ -65,13 +65,28 @@ st.markdown("""
 
 # Initialize session state
 if 'vanna' not in st.session_state:
+    # Initialize user ID in session state
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = None
+    
     try:
-        st.session_state.vanna = VannaAI()
+        # We'll initialize VannaAI after user provides ID
+        st.session_state.vanna = None
         st.session_state.connected = False
         st.session_state.query_history = []
     except Exception as e:
-        st.error(f"Failed to initialize Vanna.AI: {str(e)}")
+        st.error(f"Failed to initialize session: {str(e)}")
         st.stop()
+
+def initialize_vanna(user_id: int):
+    """Initialize VannaAI with user ID."""
+    try:
+        st.session_state.vanna = VannaAI(user_id=user_id)
+        st.session_state.user_id = user_id
+        return True
+    except Exception as e:
+        st.error(f"Failed to initialize Vanna.AI: {str(e)}")
+        return False
 
 def main():
     """Main Streamlit application."""
@@ -84,71 +99,107 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # Database connection
-        st.subheader("Database Connection")
-        db_type = st.selectbox("Database Type", ["sqlite", "mysql"])
+        # User ID section
+        st.subheader("👤 User Identification")
         
-        if db_type == "sqlite":
-            db_path = st.text_input("Database Path", value="./data/sample.db")
-            if st.button("Connect to SQLite"):
-                connect_database(db_type, {"path": db_path})
-        
-        elif db_type == "mysql":
-            col1, col2 = st.columns(2)
-            with col1:
-                mysql_host = st.text_input("Host", value="localhost")
-                mysql_db = st.text_input("Database")
-            with col2:
-                mysql_port = st.number_input("Port", value=3306)
-                mysql_user = st.text_input("User")
-            mysql_password = st.text_input("Password", type="password")
+        if st.session_state.user_id is None:
+            user_id_input = st.number_input(
+                "User ID", 
+                min_value=0,
+                value=0,
+                step=1,
+                help="Provide a unique integer identifier for your session (0 = anonymous)"
+            )
             
-            if st.button("Connect to MySQL"):
-                params = {
-                    "host": mysql_host,
-                    "port": mysql_port,
-                    "database": mysql_db,
-                    "user": mysql_user,
-                    "password": mysql_password
-                }
-                connect_database(db_type, params)
-        
-        # Connection status
-        if st.session_state.connected:
-            st.success("✅ Database Connected")
-            if st.button("Disconnect"):
-                disconnect_database()
+            if st.button("Initialize Session"):
+                if initialize_vanna(int(user_id_input)):
+                    st.success(f"✅ Session initialized for user: {user_id_input}")
+                    st.rerun()
+                else:
+                    st.error("Failed to initialize session")
         else:
-            st.warning("⚠️ No Database Connected")
+            st.success(f"✅ Active User: {st.session_state.user_id}")
+            if st.button("Change User"):
+                st.session_state.user_id = None
+                st.session_state.vanna = None
+                st.session_state.connected = False
+                st.rerun()
         
         st.markdown("---")
         
-        # Training data stats
-        st.subheader("Training Data")
-        try:
-            stats = st.session_state.vanna.get_training_stats()
-            st.metric("Total Documents", stats.get("total_documents", 0))
+        # Only show other options if VannaAI is initialized
+        if st.session_state.vanna is not None:
+            # Database connection
+            st.subheader("Database Connection")
+            db_type = st.selectbox("Database Type", ["sqlite", "mysql"])
             
-            if "data_type_distribution" in stats:
-                for data_type, count in stats["data_type_distribution"].items():
-                    st.metric(f"{data_type.title()}", count)
-        except Exception as e:
-            st.error(f"Failed to get stats: {str(e)}")
+            if db_type == "sqlite":
+                db_path = st.text_input("Database Path", value="./data/sample.db")
+                if st.button("Connect to SQLite"):
+                    connect_database(db_type, {"path": db_path})
+            
+            elif db_type == "mysql":
+                col1, col2 = st.columns(2)
+                with col1:
+                    mysql_host = st.text_input("Host", value="localhost")
+                    mysql_db = st.text_input("Database")
+                with col2:
+                    mysql_port = st.number_input("Port", value=3306)
+                    mysql_user = st.text_input("User")
+                mysql_password = st.text_input("Password", type="password")
+                
+                if st.button("Connect to MySQL"):
+                    params = {
+                        "host": mysql_host,
+                        "port": mysql_port,
+                        "database": mysql_db,
+                        "user": mysql_user,
+                        "password": mysql_password
+                    }
+                    connect_database(db_type, params)
+            
+            # Connection status
+            if st.session_state.connected:
+                st.success("✅ Database Connected")
+                if st.button("Disconnect"):
+                    disconnect_database()
+            else:
+                st.warning("⚠️ No Database Connected")
+            
+            st.markdown("---")
+            
+            # Training data stats
+            st.subheader("Training Data")
+            try:
+                stats = st.session_state.vanna.get_training_stats()
+                st.metric("Total Documents", stats.get("total_documents", 0))
+                
+                if "data_type_distribution" in stats:
+                    for data_type, count in stats["data_type_distribution"].items():
+                        st.metric(f"{data_type.title()}", count)
+            except Exception as e:
+                st.error(f"Failed to get stats: {str(e)}")
+        else:
+            st.info("👆 Please initialize your session first")
     
-    # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Query", "📚 Training", "📊 Results", "ℹ️ About"])
-    
-    with tab1:
-        query_interface()
-    
-    with tab2:
-        training_interface()
-    
-    with tab3:
-        results_interface()
-    
-    with tab4:
-        about_interface()
+    # Main content - only show if VannaAI is initialized
+    if st.session_state.vanna is not None:
+        # Main content tabs
+        tab1, tab2, tab3, tab4 = st.tabs(["🔍 Query", "📚 Training", "📊 Results", "ℹ️ About"])
+        
+        with tab1:
+            query_interface()
+        
+        with tab2:
+            training_interface()
+        
+        with tab3:
+            results_interface()
+        
+        with tab4:
+            about_interface()
+    else:
+        st.info("👈 Please provide your User ID in the sidebar to get started!")
 
 
 def connect_database(db_type: str, params: Dict[str, Any]):

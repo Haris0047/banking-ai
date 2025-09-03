@@ -16,13 +16,15 @@ class SQLGenerator:
     def __init__(self, 
                  llm: Optional[BaseLLM] = None,
                  vector_store: Optional[VectorStore] = None,
-                 db_connector=None):
-        """Initialize SQL generator with LLM, vector store, and database connector."""
+                 db_connector=None,
+                 user_id: Optional[int] = None):
+        """Initialize SQL generator with LLM, vector store, database connector, and user ID."""
         self.db_connector = db_connector
         self.llm = llm or get_default_llm(db_connector)
         self.vector_store = vector_store or VectorStore()
+        self.user_id = user_id if user_id is not None else 0
         
-        logger.info("SQL Generator initialized successfully")
+        logger.info(f"SQL Generator initialized successfully for user ID: {self.user_id}")
     
     def generate_sql(self, 
                      question: str, 
@@ -90,7 +92,7 @@ class SQLGenerator:
                             print(f"Using filtered general context: {len(context)} characters")
             print(f"Context: {context}")
             # Generate SQL using LLM
-            raw_sql = self.llm.generate_sql(question, context)
+            raw_sql = self.llm.generate_sql(question, context, user_id=self.user_id)
             logger.info(f"Raw SQL generated: {raw_sql}")
             
             # Clean and validate SQL
@@ -296,12 +298,37 @@ class SQLGenerator:
                             replacement = f"{quote_char}{best_match_value}{quote_char}"
                             corrected_sql = corrected_sql.replace(pattern, replacement)
                             logger.info(f"Replaced '{original_literal}' with '{best_match_value}' in SQL")
+                            
+                            # IMPORTANT: If we're doing exact replacement, also fix the SQL structure
+                            # Remove LOWER() and change LIKE to = for exact matches
+                            corrected_sql = self._fix_sql_structure_for_exact_matches(corrected_sql, best_match_value)
             
             return corrected_sql
             
         except Exception as e:
             logger.error(f"Error creating corrected SQL: {str(e)}")
             return original_sql
+    
+    def _fix_sql_structure_for_exact_matches(self, sql: str, exact_value: str) -> str:
+        """Fix SQL structure to use exact matches instead of LIKE when we have exact values."""
+        try:
+            import re
+            
+            # Pattern to find LOWER(column) LIKE 'exact_value' and replace with column = 'exact_value'
+            pattern = r"LOWER\s*\(\s*([^)]+)\s*\)\s+LIKE\s+['\"]" + re.escape(exact_value) + r"['\"]"
+            replacement = rf"\1 = '{exact_value}'"
+            sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+            
+            # Pattern to find column LIKE 'exact_value' (without wildcards) and replace with column = 'exact_value'
+            pattern = r"([a-zA-Z_][a-zA-Z0-9_.]*)\s+LIKE\s+['\"]" + re.escape(exact_value) + r"['\"]"
+            replacement = rf"\1 = '{exact_value}'"
+            sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+            
+            return sql
+            
+        except Exception as e:
+            logger.error(f"Error fixing SQL structure: {str(e)}")
+            return sql
     
     def improve_with_feedback(self, 
                             question: str, 

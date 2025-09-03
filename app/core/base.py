@@ -26,6 +26,7 @@ class VannaAI:
     """
     
     def __init__(self, 
+                 user_id: Optional[int] = None,
                  llm: Optional[BaseLLM] = None,
                  vector_store: Optional[VectorStore] = None,
                  database_connector: Optional[DatabaseConnector] = None):
@@ -33,11 +34,16 @@ class VannaAI:
         Initialize VannaAI instance.
         
         Args:
+            user_id: User identifier (integer)
             llm: Language model instance (defaults to OpenAI)
             vector_store: Vector store instance (defaults to Qdrant)
             database_connector: Database connector instance
         """
-        logger.info("Initializing VannaAI instance...")
+        logger.info(f"Initializing VannaAI instance for user: {user_id or 'anonymous'}...")
+        
+        # Store user ID - default to 0 for anonymous
+        self.user_id = user_id if user_id is not None else 0
+        logger.info(f"VannaAI instance assigned to user ID: {self.user_id}")
         
         # Ensure required directories exist
         ensure_directories()
@@ -52,15 +58,15 @@ class VannaAI:
             self.llm = llm or get_default_llm(database_connector)
             logger.debug("LLM initialized")
             
-            self.sql_generator = SQLGenerator(self.llm, self.vector_store, database_connector)
+            self.sql_generator = SQLGenerator(self.llm, self.vector_store, database_connector, user_id=self.user_id)
             logger.debug("SQL generator initialized")
             self.data_ingestion = DataIngestion(self.vector_store)
             logger.debug("Data ingestion initialized")
             
-            logger.info("VannaAI initialized successfully")
+            logger.info(f"VannaAI initialized successfully for user ID: {self.user_id}")
             
         except Exception as e:
-            logger.error(f"Failed to initialize VannaAI: {str(e)}")
+            logger.error(f"Failed to initialize VannaAI for user {self.user_id}: {str(e)}")
             raise VannaException(f"VannaAI initialization failed: {str(e)}")
     
     # === Training Methods ===
@@ -315,6 +321,15 @@ class VannaAI:
             logger.debug("No database connection to disconnect")
     
     # === Utility Methods ===
+    
+    def get_user_id(self) -> int:
+        """
+        Get the current user ID.
+        
+        Returns:
+            Current user ID as integer
+        """
+        return self.user_id
     
     def explain_sql(self, sql: str) -> str:
         """
