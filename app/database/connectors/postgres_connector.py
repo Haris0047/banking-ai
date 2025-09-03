@@ -36,10 +36,12 @@ class PostgreSQLConnector(DatabaseConnector):
             self._parse_connection_url(self.connection_params['connection_url'])
     
     def _parse_connection_url(self, connection_url: str):
-        """Parse PostgreSQL connection URL and extract parameters."""
+        """Parse PostgreSQL connection URL and extract parameters for display purposes."""
         try:
             parsed = urlparse(connection_url)
             
+            # Store parsed info for display/logging purposes only
+            # The actual connection will use the raw URL
             self.connection_params.update({
                 'host': parsed.hostname,
                 'port': parsed.port or 5432,
@@ -48,11 +50,11 @@ class PostgreSQLConnector(DatabaseConnector):
                 'password': parsed.password
             })
             
-            logger.info(f"Parsed PostgreSQL connection URL for database: {self.connection_params['database']}")
+            logger.info(f"Parsed PostgreSQL connection URL for database: {self.connection_params.get('database', 'unknown')}")
             
         except Exception as e:
-            logger.error(f"Failed to parse PostgreSQL connection URL: {str(e)}")
-            raise DatabaseConnectionError(f"Invalid PostgreSQL connection URL: {str(e)}")
+            logger.warning(f"Could not parse connection URL for display: {str(e)}")
+            # Don't raise error - we'll still try to connect with the raw URL
     
     def connect(self):
         """Establish PostgreSQL connection."""
@@ -60,25 +62,38 @@ class PostgreSQLConnector(DatabaseConnector):
             if self.connection and not self.connection.closed:
                 return
             
-            # Build connection parameters
-            conn_params = {
-                'host': self.connection_params.get('host', 'localhost'),
-                'port': self.connection_params.get('port', 5432),
-                'database': self.connection_params.get('database'),
-                'user': self.connection_params.get('user'),
-                'password': self.connection_params.get('password')
-            }
-            
-            # Remove None values
-            conn_params = {k: v for k, v in conn_params.items() if v is not None}
-            
-            logger.info(f"Connecting to PostgreSQL database: {conn_params.get('database')} at {conn_params.get('host')}")
-            
-            self.connection = psycopg2.connect(**conn_params)
-            self.connection.autocommit = True
-            self.cursor = self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            
-            logger.info("PostgreSQL connection established successfully")
+            # If we have a connection_url, use it directly
+            if 'connection_url' in self.connection_params:
+                connection_url = self.connection_params['connection_url']
+                logger.info(f"Connecting to PostgreSQL using direct URL: {connection_url[:50]}...")
+                
+                # Connect directly using the URL string
+                self.connection = psycopg2.connect(connection_url)
+                self.connection.autocommit = True
+                self.cursor = self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                
+                logger.info("PostgreSQL connection established successfully using direct URL")
+                
+            else:
+                # Fallback to individual parameters
+                conn_params = {
+                    'host': self.connection_params.get('host', 'localhost'),
+                    'port': self.connection_params.get('port', 5432),
+                    'database': self.connection_params.get('database'),
+                    'user': self.connection_params.get('user'),
+                    'password': self.connection_params.get('password')
+                }
+                
+                # Remove None values
+                conn_params = {k: v for k, v in conn_params.items() if v is not None}
+                
+                logger.info(f"Connecting to PostgreSQL database: {conn_params.get('database')} at {conn_params.get('host')}")
+                
+                self.connection = psycopg2.connect(**conn_params)
+                self.connection.autocommit = True
+                self.cursor = self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                
+                logger.info("PostgreSQL connection established successfully using parameters")
             
         except psycopg2.Error as e:
             logger.error(f"PostgreSQL connection failed: {str(e)}")

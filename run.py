@@ -60,37 +60,42 @@ class VannaBot:
                 print("❌ Invalid user ID. Please enter a valid integer (e.g., 1, 2, 123).")
                 continue
     
-    def connect_database(self, auto_train: bool = False):
-        """Connect to database using DATABASE_URL from environment."""
+    def connect_database(self, connection_url: str = None, auto_train: bool = False):
+        """Connect to database using provided URL or DATABASE_URL from environment."""
         try:
-            from config.settings import settings
-            
-            if not settings.database_url:
-                print("❌ No DATABASE_URL configured in environment")
-                return False
+            # Use provided URL or get from settings
+            if connection_url:
+                database_url = connection_url
+                print(f"🔗 Using provided connection URL")
+            else:
+                from config.settings import settings
+                if not settings.database_url:
+                    print("❌ No DATABASE_URL configured in environment")
+                    return False
+                database_url = settings.database_url
+                print(f"🔗 Using DATABASE_URL from environment")
             
             # Ensure it's a PostgreSQL URL
-            if not (settings.database_url.startswith('postgresql://') or settings.database_url.startswith('postgres://')):
+            if not (database_url.startswith('postgresql://') or database_url.startswith('postgres://')):
                 print(f"❌ Only PostgreSQL databases are supported. URL must start with 'postgresql://' or 'postgres://'")
                 return False
             
             db_type = "postgresql"
-            
-            connection_params = {"connection_url": settings.database_url}
+            connection_params = {"connection_url": database_url}
             
             print(f"🔌 Connecting to {db_type} database...")
             self.vanna.connect_to_database(db_type, connection_params)
             
             # Extract database name from URL for display
             from urllib.parse import urlparse
-            parsed = urlparse(settings.database_url)
+            parsed = urlparse(database_url)
             db_name = parsed.path.lstrip('/') or parsed.hostname or "database"
             
             if db_name not in [db['name'] for db in self.connected_databases]:
                 self.connected_databases.append({
                     'name': db_name,
                     'type': db_type,
-                    'url': settings.database_url,
+                    'url': database_url,
                     'tables': 0
                 })
             
@@ -114,6 +119,30 @@ class VannaBot:
             print(f"❌ Connection failed: {str(e)}")
             return False
         return True
+    
+    def connect_with_url(self):
+        """Connect to database using a direct URL input."""
+        print("\n🔗 Direct Database Connection")
+        print("Enter your PostgreSQL connection URL in the format:")
+        print("postgresql://username:password@host:port/database")
+        print("Example: postgresql://user:pass@localhost:5432/mydb")
+        
+        connection_url = input("\nEnter PostgreSQL URL: ").strip()
+        
+        if not connection_url:
+            print("❌ No URL provided")
+            return False
+        
+        # Validate URL format
+        if not (connection_url.startswith('postgresql://') or connection_url.startswith('postgres://')):
+            print("❌ Invalid URL format. Must start with 'postgresql://' or 'postgres://'")
+            return False
+        
+        # Ask about auto-training
+        train_choice = input("Auto-train from database schema? (y/N): ").strip().lower()
+        auto_train = train_choice == 'y'
+        
+        return self.connect_database(connection_url=connection_url, auto_train=auto_train)
     
     def connect_all_databases(self, db_files):
         """Connect to all database files and train from them."""
@@ -213,6 +242,7 @@ Basic Usage:
 
 Special Commands:
   /connect         - Connect to database using DATABASE_URL
+  /connect-url     - Connect using a direct PostgreSQL URL
   /list-dbs        - List all connected databases
   /user            - Show current user ID
   /help           - Show this help
@@ -221,11 +251,12 @@ Special Commands:
 
 Examples:
   /connect
+  /connect-url
   How many orders were placed last month?
   What are the most popular products?
   
 Note: Set DATABASE_URL in your .env file:
-  DATABASE_URL=postgresql://localhost:5432/uae_banking
+  DATABASE_URL=postgresql://user:password@host:port/database
         """)
     
     def show_user(self):
@@ -248,7 +279,7 @@ Note: Set DATABASE_URL in your .env file:
             
             print(f"\n💾 Connected Databases: {len(self.connected_databases)}")
             for db in self.connected_databases:
-                status = "🎯 (active)" if db['path'] == self.current_db else ""
+                status = "🎯 (active)" if db['name'] == self.current_db else ""
                 print(f"  - {db['name']}: {db['tables']} tables {status}")
             
         except Exception as e:
@@ -262,7 +293,7 @@ Note: Set DATABASE_URL in your .env file:
         
         print(f"\n💾 Connected Databases ({len(self.connected_databases)}):")
         for i, db in enumerate(self.connected_databases, 1):
-            status = "🎯 (active)" if db['path'] == self.current_db else ""
+            status = "🎯 (active)" if db['name'] == self.current_db else ""
             print(f"  {i}. {db['name']}: {db['tables']} tables {status}")
     
     def switch_database(self, db_name: str):
@@ -334,6 +365,8 @@ Type /help for commands or /quit to exit.
                         self.show_user()
                     elif command == '/connect':
                         self.connect_database(auto_train=True)
+                    elif command == '/connect-url':
+                        self.connect_with_url()
                     else:
                         print(f"❌ Unknown command: {command}")
                         print("Type /help for available commands")
