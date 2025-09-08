@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional
 import re
 import sqlparse
 from sqlparse import sql, tokens
+import sqlglot
+from sqlglot import exp
 from openai import OpenAI
 from app.utils.logger import logger
 from config.settings import settings
@@ -22,7 +24,7 @@ class BaseLLM(ABC):
         pass
     
     @abstractmethod
-    def explain_sql(self, sql: str) -> Dict[str, Any]:
+    def explain_sql(self, sql: str, relevant_tables: List[str]) -> Dict[str, Any]:
         """Explain what a SQL query does and extract string literal mappings."""
         pass
     
@@ -40,10 +42,12 @@ class BaseLLM(ABC):
 class OpenAILLM(BaseLLM):
     """OpenAI GPT implementation."""
     
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, db_connector=None):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, db_connector=None, 
+                 interactive_threshold: float = 5.0):
         self.api_key = api_key or settings.openai_api_key
         self.model = model or settings.openai_model
         self.db_connector = db_connector
+        self.interactive_threshold = interactive_threshold  # Score difference threshold for interactive selection
         
         if not self.api_key:
             logger.error("OpenAI API key is required but not provided")
@@ -78,7 +82,7 @@ class OpenAILLM(BaseLLM):
             logger.error(f"OpenAI API error: {str(e)}")
             raise LLMError(f"Failed to generate SQL: {str(e)}")
     
-    def explain_sql(self, sql: str) -> Dict[str, Any]:
+    def explain_sql(self, sql: str, relevant_tables: List[str]) -> Dict[str, Any]:
         """Explain SQL query using OpenAI GPT and extract string literal mappings."""
         try:
             prompt = f"""
@@ -105,7 +109,8 @@ class OpenAILLM(BaseLLM):
             explanation = response.choices[0].message.content.strip()
             
             # Extract string literals and their mappings
-            string_mappings = self._extract_string_literal_mappings(sql)
+            string_mappings = self._extract_string_literal_mappings(sql, relevant_tables)
+            print(f"String mappings: {string_mappings}")
             # Execute fuzzy queries and find best matches if database connector is available
             best_matches = []
             if self.db_connector and string_mappings:
@@ -121,73 +126,255 @@ class OpenAILLM(BaseLLM):
             logger.error(f"OpenAI API error during explanation: {str(e)}")
             raise LLMError(f"Failed to explain SQL: {str(e)}")
     
-    def _extract_string_literal_mappings(self, sql: str) -> List[Dict[str, str]]:
-        """Extract string literals from SQL and map them to their table/column context."""
+    def _extract_string_literal_mappings(self, sql: str, relevant_tables: List[str]) -> List[Dict[str, str]]:
+        """Extract string literals from SQL and map them to their table/column context using AST parsing."""
         try:
+            # Use AST-based approach with relevant tables list directly
+            ast_results = self.find_string_literals_ast(sql, relevant_tables)
+            print(f"AST results: {ast_results}")
+            # Convert AST results to the expected format for compatibility
             mappings = []
+            processed_literals = set()  # Track processed literals to avoid duplicates
             
-            # Parse the SQL
-            parsed = sqlparse.parse(sql)[0]
+            for result in ast_results:
+                literal_value = result.get("value", "")  # Cleaned value (without %)
+                table_name = result.get("table", "unknown")
+                column_name = result.get("column", "")
+                
+                # Skip if we've already processed this literal for this table/column
+                key = (literal_value, table_name, column_name)
+                if key in processed_literals:
+                    continue
+                processed_literals.add(key)
+                
+                # Generate fuzzy search variations for this literal
+                fuzzy_variations = self._generate_fuzzy_variations(literal_value, table_name, column_name)
+                
+                # Convert the AST result format to the expected mapping format
+                mapping = {
+                    "literal": literal_value,  # This is now the cleaned value (without %)
+                    "table": table_name,
+                    "column": column_name,
+                    "alias": result.get("alias", ""),
+                    "operator": result.get("operator", "="),
+                    "kind": result.get("kind", "compare"),
+                    "values": result.get("values", []),
+                    "raw_value": result.get("raw_value", literal_value),  # Original with %
+                    "fuzzy_variations": fuzzy_variations  # Required by _execute_fuzzy_queries_and_find_best_matches
+                }
+                
+                # For backward compatibility, also add the context field
+                alias = result.get("alias", "")
+                operator = result.get("operator", "=")
+                
+                if result.get("kind") == "inlist":
+                    values_str = "', '".join(result.get("values", []))
+                    col_ref = f"{alias}.{column_name}" if alias else column_name
+                    mapping["context"] = f"{col_ref} {operator} ('{values_str}')"
+                else:
+                    col_ref = f"{alias}.{column_name}" if alias else column_name
+                    mapping["context"] = f"{col_ref} {operator} '{literal_value}'"
+                
+                mappings.append(mapping)
             
-            # Extract table aliases and names
-            table_info = self._extract_table_info(sql)
-            # Find string literals using a simpler regex approach
-            self._find_string_literals_with_context(sql, table_info, mappings)
-            print(f"Table info: {table_info}")
-            print(f"Mappings: {mappings}")
+            logger.debug(f"AST-based extraction found {len(mappings)} string literals")
+            print(f"Relevant tables: {relevant_tables}")
+            print(f"AST Mappings: {mappings}")
             
             return mappings
             
         except Exception as e:
-            logger.error(f"Error extracting string literal mappings: {str(e)}")
-            return []
+            logger.error(f"Error extracting string literal mappings with AST: {str(e)}")
+            # Fallback to regex approach if AST fails
+            try:
+                logger.info("Falling back to regex-based extraction")
+                mappings = []
+                self._find_string_literals_with_context(sql, mappings, relevant_tables)
+                return mappings
+            except Exception as fallback_error:
+                logger.error(f"Fallback regex extraction also failed: {str(fallback_error)}")
+                return []
     
     def _extract_table_info(self, sql: str) -> Dict[str, str]:
-        """Extract table names and their aliases from parsed SQL."""
-        table_info = {}  # unique_key -> table_name
+        """Extract table names and their aliases from parsed SQL using AST."""
+        table_info = {}  # alias -> table_name mapping
         
-        # Simple extraction - look for patterns like "FROM table_name alias" or "FROM table_name"
-        sql_upper = sql.upper()
-        from_matches = re.finditer(r'FROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql_upper, re.IGNORECASE)
-        print(f"from_matches: {from_matches}")
-        
-        table_counter = 0
-        for match in from_matches:
-            print(f"match: {match}")
-            table_name = match.group(1).lower()
-            print(f"table_name: {table_name}")
-            alias = match.group(2).lower() if match.group(2) else table_name
-            print(f"alias: sa{alias}, table_name: sa{table_name}")
+        try:
+            # Parse SQL using sqlglot
+            tree = sqlglot.parse_one(sql, read="postgres")
             
-            # Create unique key to avoid overwrites
-            unique_key = f"{alias}_{table_counter}"
-            table_info[unique_key] = table_name
-            # Also store the alias -> table mapping for easy lookup
-            table_info[alias] = table_name
-            table_counter += 1
-        
-        # Also look for JOIN patterns
-        join_matches = re.finditer(r'JOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql_upper, re.IGNORECASE)
-        for match in join_matches:
-            table_name = match.group(1).lower()
-            alias = match.group(2).lower() if match.group(2) else table_name
+            # Find all table references in the SQL
+            for table in tree.find_all(exp.Table):
+                table_name = table.name
+                alias = table.alias if table.alias else table_name
+                
+                # Store the alias -> table mapping
+                table_info[alias] = table_name
+                
+                # Also store lowercase versions for case-insensitive lookup
+                table_info[alias.lower()] = table_name.lower()
+                if alias != table_name:
+                    table_info[table_name.lower()] = table_name.lower()
             
-            # Create unique key to avoid overwrites
-            unique_key = f"{alias}_{table_counter}"
-            table_info[unique_key] = table_name
-            # Also store the alias -> table mapping for easy lookup
-            table_info[alias] = table_name
-            table_counter += 1
+            logger.debug(f"Extracted table info: {table_info}")
+            print(f"AST-based table_info: {table_info}")
+            
+        except Exception as e:
+            logger.debug(f"Failed to extract table info with AST: {e}")
+            # Fallback to empty dict - the AST-based string extraction will handle "unknown" tables
+            table_info = {}
         
-        print(f"Final table_info: {table_info}")
         return table_info
     
-    def _find_string_literals_with_context(self, sql: str, table_info: Dict[str, str], mappings: List[Dict[str, str]]):
+    def find_string_literals_ast(self, sql: str, relevant_tables: List[str]) -> List[dict]:
+        """
+        Robustly extract column ↔ string literal predicates using SQL AST.
+        """
+        print(f"SQL: {sql}")
+        print(f"Relevant tables: {relevant_tables}")
+        try:
+            tree = sqlglot.parse_one(sql, read="postgres")
+        except Exception as e:
+            logger.debug(f"sqlglot parse failed: {e}")
+            return []
+
+        out, seen = [], set()
+
+        def resolve_table_name(alias: str) -> str:
+            """Resolve alias to actual table name using relevant_tables."""
+            if not alias:
+                # If no alias and we have relevant tables, use the first one as default
+                if relevant_tables:
+                    return relevant_tables[0]
+                return "unknown"
+            
+            # Check if alias matches any relevant table (case-insensitive)
+            if relevant_tables:
+                for table in relevant_tables:
+                    if alias.lower() == table.lower():
+                        return table
+                # If no exact match, return first relevant table as fallback
+                return relevant_tables[0]
+            
+            return "unknown"
+
+        def extract_column_info(column_expr):
+            """Extract alias and column name from a column expression."""
+            if isinstance(column_expr, exp.Column):
+                alias = column_expr.table if column_expr.table else None
+                column = column_expr.name
+                return alias, column
+            
+            # Try to find a column within the expression (for functions, etc.)
+            for column in column_expr.find_all(exp.Column):
+                alias = column.table if column.table else None
+                column_name = column.name
+                return alias, column_name
+            
+            return None, None
+
+        # Find all comparison operations with string literals
+        for node in tree.find_all((exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.Like, exp.ILike, exp.In)):
+            if isinstance(node, (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE)):
+                # Binary comparisons: column = 'value'
+                left, right = node.left, node.right
+                alias, column = extract_column_info(left)
+                
+                if isinstance(right, exp.Literal) and right.is_string:
+                    table_name = resolve_table_name(alias)
+                    
+                    # Map expression types to operators
+                    op_map = {
+                        exp.EQ: "=", exp.NEQ: "!=", exp.LT: "<", 
+                        exp.LTE: "<=", exp.GT: ">", exp.GTE: ">="
+                    }
+                    operator = op_map.get(type(node), "=")
+                    
+                    key = (alias, column, operator, right.this)
+                    if key not in seen and column:
+                        seen.add(key)
+                        out.append({
+                            "table": table_name,
+                            "alias": alias,
+                            "column": column,
+                            "operator": operator,
+                            "value": right.this,
+                            "values": [right.this],
+                            "kind": "compare",
+                        })
+            
+            elif isinstance(node, (exp.Like, exp.ILike)):
+                # LIKE/ILIKE operations
+                left, right = node.this, node.expression
+                alias, column = extract_column_info(left)
+                
+                if isinstance(right, exp.Literal) and right.is_string:
+                    table_name = resolve_table_name(alias)
+                    operator = "ILIKE" if isinstance(node, exp.ILike) else "LIKE"
+                    
+                    # Extract the actual search term by removing % wildcards
+                    raw_value = right.this
+                    clean_value = raw_value.strip('%')  # Remove leading/trailing %
+                    
+                    key = (alias, column, operator, raw_value)
+                    if key not in seen and column:
+                        seen.add(key)
+                        out.append({
+                            "table": table_name,
+                            "alias": alias,
+                            "column": column,
+                            "operator": operator,
+                            "value": clean_value,  # Use cleaned value (without %)
+                            "raw_value": raw_value,  # Keep original for reference
+                            "values": [clean_value],
+                            "kind": "compare",
+                        })
+            
+            elif isinstance(node, exp.In):
+                # IN operations: column IN ('val1', 'val2')
+                alias, column = extract_column_info(node.this)
+                
+                values = []
+                for expr in node.expressions:
+                    if isinstance(expr, exp.Literal) and expr.is_string:
+                        values.append(expr.this)
+                
+                if values and column:
+                    table_name = resolve_table_name(alias)
+                    key = (alias, column, "IN", tuple(values))
+                    if key not in seen:
+                        seen.add(key)
+                        out.append({
+                            "table": table_name,
+                            "alias": alias,
+                            "column": column,
+                            "operator": "IN",
+                            "value": values[0] if len(values) == 1 else None,
+                            "values": values,
+                            "kind": "inlist",
+                        })
+        
+        return out
+    
+    def _find_string_literals_with_context(self, sql: str, mappings: List[Dict[str, str]], relevant_tables: List[str]):
         """Find string literals and their context using regex patterns."""
         try:
             processed_literals = set()  # Track processed literals to avoid duplicates
             print(f"SQL: {sql}")
-            print(f"table_info: s{table_info}")
+            print(f"relevant_tables: {relevant_tables}")
+            
+            def resolve_table_name_regex(alias: str) -> str:
+                """Resolve table name using relevant_tables."""
+                # Check if alias matches any relevant table (case-insensitive)
+                if relevant_tables:
+                    for table in relevant_tables:
+                        if alias.lower() == table.lower():
+                            return table
+                    # Return first relevant table as fallback
+                    return relevant_tables[0]
+                
+                return alias  # Return original alias if no resolution found
+            
             # Pattern 1: table.column = 'value' or table.column LIKE 'value'
             pattern1 = r'(\w+)\.(\w+)\s*(?:[=<>!]+|LIKE|ILIKE|IN)\s*[\'"]([^\'"]+)[\'"]'
             matches1 = re.finditer(pattern1, sql, re.IGNORECASE)
@@ -195,7 +382,7 @@ class OpenAILLM(BaseLLM):
                 table_alias = match.group(1).lower()
                 column_name = match.group(2).lower()
                 literal_value = match.group(3)
-                table_name = table_info.get(table_alias, table_alias)
+                table_name = resolve_table_name_regex(table_alias)
                 
                 print(f"Pattern 1 match: {table_alias}.{column_name} = '{literal_value}'")
                 
@@ -219,7 +406,7 @@ class OpenAILLM(BaseLLM):
                 table_alias = match.group(1).lower()
                 column_name = match.group(2).lower()
                 literal_value = match.group(3)
-                table_name = table_info.get(table_alias, table_alias)
+                table_name = resolve_table_name_regex(table_alias)
                 
                 print(f"Pattern 2 match: FUNC({table_alias}.{column_name}) = '{literal_value}'")
                 
@@ -239,7 +426,6 @@ class OpenAILLM(BaseLLM):
             # Pattern 3: column = 'value' (without table prefix)
             pattern3 = r'(?<!\.)\b(\w+)\s*(?:[=<>!]+|LIKE|ILIKE|IN)\s*[\'"]([^\'"]+)[\'"]'
             matches3 = re.finditer(pattern3, sql, re.IGNORECASE)
-            print("table_info", table_info)
             for match in matches3:
                 column_name = match.group(1).lower()
                 literal_value = match.group(2)
@@ -248,12 +434,11 @@ class OpenAILLM(BaseLLM):
                 if column_name.upper() in ['AND', 'OR', 'WHERE', 'SELECT', 'FROM', 'JOIN', 'ON', 'ORDER', 'GROUP', 'HAVING', 'LIMIT', 'OFFSET']:
                     continue
                 
-                # Try to find the table for this column from table_info
+                # Use the first relevant table for columns without table prefix
                 table_name = "unknown"
-                for alias, tbl in table_info.items():
-                    print(f"alias: {alias}, tbl: {tbl}")
-                    table_name = tbl
-                    break  # Use first table as default
+                if relevant_tables:
+                    table_name = relevant_tables[0]
+                    print(f"Using first relevant table: {table_name}")
                 
                 print(f"Pattern 3 match: {column_name} = '{literal_value}' (table: {table_name})")
                 
@@ -396,6 +581,7 @@ class OpenAILLM(BaseLLM):
                 table = mapping["table"]
                 column = mapping["column"]
                 fuzzy_variations = mapping["fuzzy_variations"]
+                raw_value = mapping["raw_value"]
                 
                 print(f"Processing literal: '{literal}' in {table}.{column}")
                 
@@ -475,18 +661,73 @@ class OpenAILLM(BaseLLM):
                     
                     return 0.0
                 
-                # Find the best merchant name
-                best_merchant_name = None
-                best_score = 0.0
+                # Score all merchant names and check for ambiguity
+                scored_names = []
                 print("all_merchant_names", all_merchant_names)
                 for name in all_merchant_names:
                     print("name", name)
                     score = score_merchant_name(name)
                     print("score", score)
-                    if score > best_score:
-                        print("best_score", best_score)
-                        best_score = score
-                        best_merchant_name = name
+                    scored_names.append((name, score))
+                
+                # Sort by score (highest first)
+                scored_names.sort(key=lambda x: x[1], reverse=True)
+                
+                # Check for ambiguity - if top scores are too close, ask user
+                best_merchant_name = None
+                best_score = 0.0
+                
+                if scored_names:
+                    # Filter out very low scores (< 50)
+                    good_matches = [(name, score) for name, score in scored_names if score > 50.0]
+                    
+                    if len(good_matches) > 1:
+                        # Check if top matches are too close (within threshold points)
+                        top_score = good_matches[0][1]
+                        close_matches = [(name, score) for name, score in good_matches if top_score - score <= self.interactive_threshold]
+                        
+                        if len(close_matches) > 1:
+                            print(f"\nAmbiguous matches found for '{literal}' in {table}.{column}:")
+                            selected_names = self._get_user_selection_for_ambiguous_matches(literal, close_matches)
+                            
+                            if selected_names:
+                                # Process all selected names
+                                for selected_name in selected_names:
+                                    selected_score = next(score for name, score in close_matches if name == selected_name)
+                                    
+                                    # Find which variation found this merchant name
+                                    best_variation = None
+                                    for var_result in variation_results:
+                                        if selected_name in var_result["merchant_names"]:
+                                            best_variation = var_result
+                                            break
+                                    
+                                    best_matches.append({
+                                        "original_literal": literal,
+                                        "table": table,
+                                        "column": column,
+                                        "raw_value": raw_value,
+                                        "best_match_value": selected_name,
+                                        "match_score": selected_score,
+                                        "variation_used": best_variation["variation"]["type"] if best_variation else "unknown",
+                                        "total_variations_tested": len(fuzzy_variations),
+                                        "unique_names_found": len(all_merchant_names),
+                                        "user_selected": True  # Flag to indicate user selection
+                                    })
+                                
+                                # Skip the normal processing since we handled it above
+                                continue
+                            else:
+                                # User chose none, skip this mapping
+                                continue
+                        else:
+                            # Clear winner
+                            best_merchant_name = good_matches[0][0]
+                            best_score = good_matches[0][1]
+                    elif len(good_matches) == 1:
+                        # Single good match
+                        best_merchant_name = good_matches[0][0]
+                        best_score = good_matches[0][1]
                 
                 print(f"Best match: '{best_merchant_name}' (score: {best_score})")
                 
@@ -502,17 +743,94 @@ class OpenAILLM(BaseLLM):
                         "original_literal": literal,
                         "table": table,
                         "column": column,
+                        "raw_value": raw_value,
                         "best_match_value": best_merchant_name,
                         "match_score": best_score,
                         "variation_used": best_variation["variation"]["type"] if best_variation else "unknown",
                         "total_variations_tested": len(fuzzy_variations),
-                        "unique_names_found": len(all_merchant_names)
+                        "unique_names_found": len(all_merchant_names),
+                        "user_selected": False  # Flag to indicate automatic selection
                     })
         
         except Exception as e:
             logger.error(f"Error in fuzzy matching: {str(e)}")
         
         return best_matches
+    
+    def _get_user_selection_for_ambiguous_matches(self, original_literal: str, close_matches: List[tuple]) -> List[str]:
+        """
+        Present ambiguous matches to user and get their selection.
+        
+        Args:
+            original_literal: The original string literal from the SQL
+            close_matches: List of (name, score) tuples with similar scores
+            
+        Returns:
+            List of selected merchant names (can be empty if user chooses none)
+        """
+        try:
+            print(f"\n{'='*60}")
+            print(f"AMBIGUOUS MATCH RESOLUTION")
+            print(f"{'='*60}")
+            print(f"Original search term: '{original_literal}'")
+            print(f"Found {len(close_matches)} similar matches:")
+            print()
+            
+            # Display options
+            for i, (name, score) in enumerate(close_matches, 1):
+                print(f"{i}. {name} (similarity: {score:.1f}%)")
+            
+            print(f"{len(close_matches) + 1}. All of the above")
+            print(f"{len(close_matches) + 2}. None of the above (skip this match)")
+            print()
+            
+            # Get user input
+            while True:
+                try:
+                    user_input = input("Select option(s) (e.g., '1', '1,3', 'all', or 'none'): ").strip().lower()
+                    
+                    if user_input in ['none', 'skip', str(len(close_matches) + 2)]:
+                        print("Skipping this match as requested.")
+                        return []
+                    
+                    if user_input in ['all', str(len(close_matches) + 1)]:
+                        selected_names = [name for name, _ in close_matches]
+                        print(f"Selected all matches: {selected_names}")
+                        return selected_names
+                    
+                    # Parse individual selections
+                    selections = []
+                    for part in user_input.replace(' ', '').split(','):
+                        if part.isdigit():
+                            idx = int(part) - 1
+                            if 0 <= idx < len(close_matches):
+                                selections.append(idx)
+                            else:
+                                print(f"Invalid option: {part}. Please try again.")
+                                break
+                        else:
+                            print(f"Invalid input: {part}. Please use numbers, 'all', or 'none'.")
+                            break
+                    else:
+                        # All parts were valid
+                        if selections:
+                            selected_names = [close_matches[idx][0] for idx in selections]
+                            print(f"Selected: {selected_names}")
+                            return selected_names
+                        else:
+                            print("No valid selections made. Please try again.")
+                
+                except (ValueError, KeyboardInterrupt):
+                    print("Invalid input. Please try again or press Ctrl+C to skip.")
+                    continue
+                except EOFError:
+                    print("\nInput interrupted. Skipping this match.")
+                    return []
+        
+        except Exception as e:
+            logger.error(f"Error in user selection: {str(e)}")
+            print(f"Error getting user input: {str(e)}. Using first match as fallback.")
+            return [close_matches[0][0]] if close_matches else []
     
     def generate_summary(self, question: str, sql: str, results: Dict[str, Any]) -> str:
         """Generate a natural language summary of query results using OpenAI GPT."""
@@ -616,10 +934,16 @@ class OpenAILLM(BaseLLM):
         4. NEVER use LOWER() with LIKE for exact string matches
         5. NEVER use LIKE without wildcards (%, _) - use = instead
         6. Include appropriate JOINs when needed
-        7. Use meaningful table aliases
-        8. Return only the SQL query, no explanations
-        9. Use the provided schema and context information
-        10. For date operations, use PostgreSQL date functions like EXTRACT(), DATE(), NOW(), etc.
+        7. Return only the SQL query, no explanations
+        8. Use the provided schema and context information
+        9. For date operations, use PostgreSQL date functions like EXTRACT(), DATE(), NOW(), etc.
+        
+        MANDATORY TABLE ALIASING RULES:
+        - ALWAYS use table aliases for ALL tables in your queries
+        - Use short, meaningful aliases (e.g., transactions → t, accounts → a, users → u)
+        - ALWAYS qualify column names with table aliases (e.g., t.merchant_name, a.account_type)
+        - Example: SELECT t.amount FROM transactions t WHERE t.direction = 'debit'
+        - NEVER use unqualified column names like 'merchant_category' - always use 't.merchant_category'
         
         CRITICAL RULES FOR STRING MATCHING:
         - If you have an exact merchant name like 'PlayStation Plus', use: merchant_name = 'PlayStation Plus'
@@ -693,13 +1017,20 @@ Use this date information for relative date queries like:
         Question: {question}
         
         IMPORTANT: When generating SQL:
-        - Use = for exact matches (merchant_name = 'PlayStation Plus')
-        - Use ILIKE with wildcards for pattern matching (merchant_name ILIKE '%playstation%')
+        - ALWAYS use table aliases and qualify ALL column names (e.g., t.merchant_name, not merchant_name)
+        - Use = for exact matches (t.merchant_name = 'PlayStation Plus')
+        - Use ILIKE with wildcards for pattern matching (t.merchant_name ILIKE '%playstation%')
         - DO NOT use LOWER() with LIKE for exact strings
         - DO NOT use LIKE without wildcards
         - Use the current date information above for relative date queries
         - ONLY add date/time filters if user explicitly mentions dates or time periods
         - If no date/time mentioned in question, do NOT add any date filters
+        
+        TABLE ALIASING EXAMPLES:
+        ✅ CORRECT: SELECT t.amount FROM transactions t WHERE t.direction = 'debit'
+        ❌ WRONG: SELECT amount FROM transactions WHERE direction = 'debit'
+        ✅ CORRECT: SELECT t.merchant_name FROM transactions t WHERE t.merchant_category = 'Groceries'
+        ❌ WRONG: SELECT merchant_name FROM transactions WHERE merchant_category = 'Groceries'
         
         Generate a SQL query to answer this question using the provided context.
         """

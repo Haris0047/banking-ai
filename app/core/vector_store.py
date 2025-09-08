@@ -134,28 +134,62 @@ class VectorStore:
             logger.error(f"Failed to add SQL pair: {str(e)}")
             raise VectorStoreError(f"Failed to add SQL pair: {str(e)}")
     
-    def add_ddl(self, ddl_statement: str, table_name: Optional[str] = None) -> str:
+    def add_ddl(self, ddl_data: dict, table_name: Optional[str] = None) -> str:
         """
-        Add a DDL statement to the ddl_definitions collection.
+        Add structured DDL data to the ddl_definitions collection.
         
         Args:
-            ddl_statement: DDL statement (CREATE TABLE, etc.)
-            table_name: Optional table name for metadata
+            ddl_data: Dictionary containing structured DDL data with keys:
+                     - table: table name
+                     - ddl: DDL statement  
+                     - description: table description
+                     - columns: list of column dictionaries
+                     - sample_data: list of sample data records
+            table_name: Optional table name override
             
         Returns:
             Document ID
         """
         try:
-            # Parse DDL to extract information
+            # Extract structured data
+            name = table_name or ddl_data.get('table', '')
+            ddl_statement = ddl_data.get('ddl', '')
+            description = ddl_data.get('description', '')
+            column_descriptions = ddl_data.get('columns', [])
+            sample_data = ddl_data.get('sample_data', [])
+            
+            if not name or not ddl_statement:
+                raise ValueError("Missing required table name or DDL statement")
+            
+            # Parse DDL to extract basic information
             object_type = self._extract_object_type_from_ddl(ddl_statement)
-            name = table_name or self._extract_name_from_ddl(ddl_statement)
             columns = self._extract_columns_from_ddl(ddl_statement) if object_type == "table" else []
             
-            # Create embedding text (table name + column names + DDL)
-            embedding_text = f"{name} {' '.join(columns)} {ddl_statement}"
-            embedding = self._generate_embedding(embedding_text)
+            # Create enhanced content for embedding (preserving rich context)
+            enhanced_content = ddl_statement
+            if description:
+                enhanced_content += f"\n\nTable Description: {description}"
+            if column_descriptions:
+                enhanced_content += f"\n\nColumn Descriptions:"
+                for col in column_descriptions:
+                    col_name = col.get('name', '')
+                    col_desc = col.get('description', '')
+                    if col_name and col_desc:
+                        enhanced_content += f"\n- {col_name}: {col_desc}"
+            if sample_data:
+                enhanced_content += f"\n\nSample Data:"
+                for sample in sample_data[:3]:  # Limit to first 3 samples
+                    if 'merchant_name' in sample:
+                        enhanced_content += f"\n- {sample.get('merchant_name', '')}, {sample.get('merchant_category', '')}, {sample.get('txn_type', '')}, {sample.get('direction', '')}, {sample.get('amount_aed', '')} AED"
+                    elif 'full_name' in sample:
+                        enhanced_content += f"\n- User: {sample.get('full_name', '')}, Email: {sample.get('email', '')}"
+                    elif 'account_name' in sample:
+                        enhanced_content += f"\n- Account: {sample.get('account_name', '')}, Type: {sample.get('account_type', '')}, Currency: {sample.get('currency', '')}"
             
-            # Create point
+            # Generate embedding from enhanced content
+            embedding = self._generate_embedding(enhanced_content)
+            
+            # Create point with structured payload matching JSON format
             point_id = str(uuid.uuid4())
             point = PointStruct(
                 id=point_id,
@@ -163,9 +197,12 @@ class VectorStore:
                 payload={
                     "id": point_id,
                     "object_type": object_type,
-                    "name": name,
-                    "ddl_text": ddl_statement,
-                    "columns": columns,
+                    "table": name,
+                    "ddl": ddl_statement,
+                    "description": description,
+                    "columns": column_descriptions,  # Structured column info
+                    "sample_data": sample_data,
+                    "ddl_columns": columns,  # Extracted column names for backward compatibility
                     "timestamp": datetime.now().isoformat(),
                     "collection_type": "ddl_definitions"
                 }
@@ -177,7 +214,7 @@ class VectorStore:
                 points=[point]
             )
             
-            logger.info(f"Added DDL to ddl_definitions collection: {point_id}")
+            logger.info(f"Added structured DDL to ddl_definitions collection: {point_id}")
             return point_id
             
         except Exception as e:

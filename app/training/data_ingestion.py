@@ -88,13 +88,16 @@ class DataIngestion:
         Expected JSON format:
         {
             "ddl_statements": [
-                {"statement": "CREATE TABLE...", "table_name": "users"}
+                {
+                    "table": "users",
+                    "ddl": "CREATE TABLE...",
+                    "description": "Table description",
+                    "columns": [{"name": "col1", "description": "Column description"}],
+                    "sample_data": [{"col1": "value1"}]
+                }
             ],
-            "sql_pairs": [
+            "query_pairs": [
                 {"question": "How many users?", "sql": "SELECT COUNT(*) FROM users", "explanation": "..."}
-            ],
-            "documentation": [
-                {"table_name": "users", "description": "...", "column_descriptions": {...}}
             ]
         }
         
@@ -114,27 +117,32 @@ class DataIngestion:
             summary = {
                 "ddl_added": 0,
                 "sql_pairs_added": 0,
-                "documentation_added": 0,
                 "errors": []
             }
             
-            # Process DDL statements
+            # Process enhanced DDL statements
             if "ddl_statements" in data:
-                logger.debug(f"Processing {len(data['ddl_statements'])} DDL statements")
+                logger.debug(f"Processing {len(data['ddl_statements'])} enhanced DDL statements")
                 for ddl_item in data["ddl_statements"]:
                     try:
-                        self.vector_store.add_ddl(
-                            ddl_item["statement"], 
-                            ddl_item.get("table_name")
-                        )
+                        table_name = ddl_item.get('table', '')
+                        ddl_statement = ddl_item.get('ddl', '')
+                        
+                        if not table_name or not ddl_statement:
+                            summary["errors"].append(f"Missing table name or DDL statement")
+                            continue
+                        
+                        # Pass the structured DDL data directly to preserve JSON format
+                        self.vector_store.add_ddl(ddl_item, table_name)
                         summary["ddl_added"] += 1
                     except Exception as e:
                         summary["errors"].append(f"DDL error: {str(e)}")
             
-            # Process SQL pairs
-            if "sql_pairs" in data:
-                logger.debug(f"Processing {len(data['sql_pairs'])} SQL pairs")
-                for pair in data["sql_pairs"]:
+            # Process SQL pairs (renamed from sql_pairs to query_pairs)
+            query_pairs_key = "query_pairs" if "query_pairs" in data else "sql_pairs"  # Backward compatibility
+            if query_pairs_key in data:
+                logger.debug(f"Processing {len(data[query_pairs_key])} SQL query pairs")
+                for pair in data[query_pairs_key]:
                     try:
                         self.vector_store.add_sql_pair(
                             pair["question"],
@@ -145,19 +153,9 @@ class DataIngestion:
                     except Exception as e:
                         summary["errors"].append(f"SQL pair error: {str(e)}")
             
-            # Process documentation
+            # Skip documentation processing (now integrated into enhanced DDL)
             if "documentation" in data:
-                logger.debug(f"Processing {len(data['documentation'])} documentation entries")
-                for doc in data["documentation"]:
-                    try:
-                        self.vector_store.add_documentation(
-                            doc["table_name"],
-                            doc["description"],
-                            doc.get("column_descriptions")
-                        )
-                        summary["documentation_added"] += 1
-                    except Exception as e:
-                        summary["errors"].append(f"Documentation error: {str(e)}")
+                logger.info(f"Skipping {len(data['documentation'])} documentation entries - now integrated into enhanced DDL structure")
             
             logger.info(f"JSON ingestion completed: {summary}")
             return summary

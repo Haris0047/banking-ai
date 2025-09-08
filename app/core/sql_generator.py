@@ -45,7 +45,7 @@ class SQLGenerator:
             # Get relevant context from vector store
             context = self.vector_store.get_context_for_question(
                 question=question,
-                collection_types=['query_pairs'],
+                collection_types=['query_pairs', 'ddl_definitions'],
                 max_context_length=max_context_length
             )
             print(f"Context: {context}")
@@ -102,7 +102,7 @@ class SQLGenerator:
             logger.info(f"Validation result: {validation_result}")
             
             # Generate explanation
-            explanation_result = self._generate_explanation(cleaned_sql, question)
+            explanation_result = self._generate_explanation(cleaned_sql, question,relevant_tables)
             logger.info(f"Explanation result: {explanation_result}")
             
             # Create corrected SQL with best match values
@@ -228,11 +228,11 @@ class SQLGenerator:
                 "parsed_successfully": False
             }
     
-    def _generate_explanation(self, sql: str, question: str) -> Dict[str, Any]:
+    def _generate_explanation(self, sql: str, question: str, relevant_tables: List[str]) -> Dict[str, Any]:
         """Generate explanation for the SQL query."""
         try:
             logger.debug("Generating SQL explanation...")
-            explanation_result = self.llm.explain_sql(sql)
+            explanation_result = self.llm.explain_sql(sql, relevant_tables)
             logger.debug("SQL explanation generated successfully")
             return explanation_result
         except Exception as e:
@@ -276,32 +276,39 @@ class SQLGenerator:
             
             corrected_sql = original_sql
             
-            # Sort best matches by original literal length (longest first) to avoid partial replacements
-            sorted_matches = sorted(best_matches, key=lambda x: len(x.get("original_literal", "")), reverse=True)
-            
-            for match in sorted_matches:
+            # Group matches by original literal to handle multiple selections for the same literal
+            matches_by_literal = {}
+            for match in best_matches:
                 original_literal = match.get("original_literal", "")
-                best_match_value = match.get("best_match_value", "")
+                if original_literal:
+                    if original_literal not in matches_by_literal:
+                        matches_by_literal[original_literal] = []
+                    matches_by_literal[original_literal].append(match)
+            
+            print(f"Matches grouped by literal: {matches_by_literal}")
+            
+            # Sort by original literal length (longest first) to avoid partial replacements
+            sorted_literals = sorted(matches_by_literal.keys(), key=len, reverse=True)
+            
+            for original_literal in sorted_literals:
+                matches = matches_by_literal[original_literal]
                 
-                if original_literal and best_match_value and original_literal != best_match_value:
-                    # Replace the original literal with the best match value in the SQL
-                    # Handle both single and double quotes
-                    patterns_to_replace = [
-                        f"'{original_literal}'",
-                        f'"{original_literal}"'
-                    ]
+                if len(matches) == 1:
+                    # Single match - use simple replacement
+                    match = matches[0]
+                    best_match_value = match.get("best_match_value", "")
+                    raw_value = match.get("raw_value", "")
                     
-                    for pattern in patterns_to_replace:
-                        if pattern in corrected_sql:
-                            # Use the same quote style as the original
-                            quote_char = pattern[0]
-                            replacement = f"{quote_char}{best_match_value}{quote_char}"
-                            corrected_sql = corrected_sql.replace(pattern, replacement)
-                            logger.info(f"Replaced '{original_literal}' with '{best_match_value}' in SQL")
-                            
-                            # IMPORTANT: If we're doing exact replacement, also fix the SQL structure
-                            # Remove LOWER() and change LIKE to = for exact matches
-                            corrected_sql = self._fix_sql_structure_for_exact_matches(corrected_sql, best_match_value)
+                    if best_match_value and original_literal != best_match_value:
+                        corrected_sql = self._replace_single_value(corrected_sql, raw_value, best_match_value, original_literal)
+                
+                elif len(matches) > 1:
+                    # Multiple matches - convert to IN clause or OR conditions
+                    match_values = [match.get("best_match_value", "") for match in matches if match.get("best_match_value")]
+                    raw_value = matches[0].get("raw_value", "")
+                    
+                    if match_values:
+                        corrected_sql = self._replace_with_multiple_values(corrected_sql, raw_value, match_values, original_literal)
             
             return corrected_sql
             
@@ -309,20 +316,124 @@ class SQLGenerator:
             logger.error(f"Error creating corrected SQL: {str(e)}")
             return original_sql
     
+    def _replace_single_value(self, sql: str, raw_value: str, best_match_value: str, original_literal: str) -> str:
+        """Replace a single value in the SQL."""
+        try:
+            print(f"Replacing '{original_literal}' with '{best_match_value}' in SQL")
+            
+            # Handle both single and double quotes
+            patterns_to_replace = [
+                f"'{raw_value}'",
+                f'"{raw_value}"',
+            ]
+            
+            print(f"Patterns to replace: {patterns_to_replace}")
+            
+            for pattern in patterns_to_replace:
+                if pattern in sql:
+                    # Use the same quote style as the original
+                    quote_char = pattern[0]
+                    replacement = f"{quote_char}{best_match_value}{quote_char}"
+                    sql = sql.replace(pattern, replacement)
+                    logger.info(f"Replaced '{original_literal}' with '{best_match_value}' in SQL")
+                    
+                    # Fix SQL structure for exact matches
+                    sql = self._fix_sql_structure_for_exact_matches(sql, best_match_value)
+                    break
+            
+            return sql
+            
+        except Exception as e:
+            logger.error(f"Error replacing single value: {str(e)}")
+            return sql
+    
+    def _replace_with_multiple_values(self, sql: str, raw_value: str, match_values: List[str], original_literal: str) -> str:
+        """Replace a single value with multiple values using IN clause or OR conditions."""
+        try:
+            print(f"Replacing '{original_literal}' with multiple values: {match_values}")
+            
+            # Handle both single and double quotes
+            patterns_to_replace = [
+                f"'{raw_value}'",
+                f'"{raw_value}"',
+            ]
+            
+            for pattern in patterns_to_replace:
+                if pattern in sql:
+                    quote_char = pattern[0]
+                    
+                    # Create IN clause with all selected values
+                    in_values = [f"{quote_char}{value}{quote_char}" for value in match_values]
+                    in_clause = f"({', '.join(in_values)})"
+                    
+                    # Find the column and operator context
+                    import re
+                    
+                    # Look for patterns like "column = 'value'" or "column LIKE 'value'"
+                    column_pattern = r'(\w+(?:\.\w+)?)\s*(=|!=|<>|LIKE|ILIKE|NOT LIKE|NOT ILIKE)\s*' + re.escape(pattern)
+                    match = re.search(column_pattern, sql, re.IGNORECASE)
+                    
+                    if match:
+                        column_ref = match.group(1)
+                        operator = match.group(2).upper()
+                        
+                        # Replace the entire condition
+                        old_condition = match.group(0)
+                        
+                        if operator in ['=', '!=', '<>', 'LIKE', 'ILIKE', 'NOT LIKE', 'NOT ILIKE']:
+                            # Use IN clause for equality and LIKE operations
+                            if operator.startswith('NOT'):
+                                new_condition = f"{column_ref} NOT IN {in_clause}"
+                            else:
+                                new_condition = f"{column_ref} IN {in_clause}"
+                        else:
+                            # For other operators, use OR conditions
+                            or_conditions = []
+                            for value in match_values:
+                                or_conditions.append(f"{column_ref} {operator} {quote_char}{value}{quote_char}")
+                            new_condition = f"({' OR '.join(or_conditions)})"
+                        
+                        sql = sql.replace(old_condition, new_condition)
+                        logger.info(f"Replaced '{original_literal}' with IN clause: {in_clause}")
+                        
+                    else:
+                        # Fallback: simple replacement with first value
+                        replacement = f"{quote_char}{match_values[0]}{quote_char}"
+                        sql = sql.replace(pattern, replacement)
+                        logger.warning(f"Could not find column context, used simple replacement with first value")
+                    
+                    break
+            
+            return sql
+            
+        except Exception as e:
+            logger.error(f"Error replacing with multiple values: {str(e)}")
+            # Fallback to simple replacement with first value
+            return self._replace_single_value(sql, raw_value, match_values[0] if match_values else "", original_literal)
+    
     def _fix_sql_structure_for_exact_matches(self, sql: str, exact_value: str) -> str:
         """Fix SQL structure to use exact matches instead of LIKE when we have exact values."""
         try:
             import re
             
-            # Pattern to find LOWER(column) LIKE 'exact_value' and replace with column = 'exact_value'
-            pattern = r"LOWER\s*\(\s*([^)]+)\s*\)\s+LIKE\s+['\"]" + re.escape(exact_value) + r"['\"]"
-            replacement = rf"\1 = '{exact_value}'"
-            sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+            # Escape the exact value for regex safety
+            escaped_value = re.escape(exact_value)
             
-            # Pattern to find column LIKE 'exact_value' (without wildcards) and replace with column = 'exact_value'
-            pattern = r"([a-zA-Z_][a-zA-Z0-9_.]*)\s+LIKE\s+['\"]" + re.escape(exact_value) + r"['\"]"
-            replacement = rf"\1 = '{exact_value}'"
-            sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+            # Pattern 1: LOWER(column) LIKE/ILIKE 'exact_value' → column = 'exact_value'
+            pattern1 = rf"LOWER\s*\(\s*([^)]+)\s*\)\s+(I?LIKE)\s+(['\"]){escaped_value}\3"
+            replacement1 = rf"\1 = \3{exact_value}\3"
+            sql = re.sub(pattern1, replacement1, sql, flags=re.IGNORECASE)
+            
+            # Pattern 2: UPPER(column) LIKE/ILIKE 'EXACT_VALUE' → column = 'exact_value'
+            pattern2 = rf"UPPER\s*\(\s*([^)]+)\s*\)\s+(I?LIKE)\s+(['\"]){escaped_value.upper()}\3"
+            replacement2 = rf"\1 = \3{exact_value}\3"
+            sql = re.sub(pattern2, replacement2, sql, flags=re.IGNORECASE)
+            
+            # Pattern 3: column LIKE/ILIKE 'exact_value' (only if no wildcards) → column = 'exact_value'
+            if '%' not in exact_value and '_' not in exact_value:
+                pattern3 = rf"([a-zA-Z_][a-zA-Z0-9_.]*)\s+(I?LIKE)\s+(['\"]){escaped_value}\3"
+                replacement3 = rf"\1 = \3{exact_value}\3"
+                sql = re.sub(pattern3, replacement3, sql, flags=re.IGNORECASE)
             
             return sql
             

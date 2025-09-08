@@ -2,6 +2,7 @@
 openai>=1.0.0
 qdrant-client>=1.6.0
 sqlparse>=0.4.4
+sqlglot>=20.0.0
 
 # Database connectors
 psycopg2-binary>=2.9.0
