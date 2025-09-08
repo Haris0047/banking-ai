@@ -64,6 +64,7 @@ def load_all_training_data_from_files(ddl_file_path: str, query_pairs_file_path:
                 table_name = ddl_item.get('table', '')
                 ddl_statement = ddl_item.get('ddl', '')
                 description = ddl_item.get('description', '')
+                join_info = ddl_item.get('join_info', [])
                 columns = ddl_item.get('columns', [])
                 sample_data = ddl_item.get('sample_data', [])
                 
@@ -74,12 +75,19 @@ def load_all_training_data_from_files(ddl_file_path: str, query_pairs_file_path:
                 
                                 # Pass the complete structured data directly to the vector store
                 # instead of going through the train_ddl method which expects a string
+                print(f"  🔄 [{i}/{schema_count}] Processing table: {table_name}")
+                print(f"      DDL length: {len(ddl_statement)} characters")
+                print(f"      Description: {'Yes' if description else 'No'}")
+                print(f"      Join info: {len(join_info)} entries")
+
                 doc_id = vanna.vector_store.add_ddl(ddl_item, table_name)
-                print(f"  ✅ [{i}/{schema_count}] Added enhanced DDL for table: {table_name}")
+                print(f"  ✅ [{i}/{schema_count}] Added enhanced DDL for table: {table_name} (ID: {doc_id})")
                 ddl_success += 1
                 
             except Exception as e:
-                print(f"  ❌ [{i}/{schema_count}] Failed to add DDL for {ddl_item.get('table', 'unknown')}: {str(e)}")
+                print(f"  ❌ [{i}/{schema_count}] Failed to add DDL for {ddl_item.get('table', 'unknown')}")
+                print(f"      Error details: {str(e)}")
+                print(f"      Error type: {type(e).__name__}")
                 ddl_failed += 1
         
         print(f"✅ Enhanced DDL Loading Complete: {ddl_success} successful, {ddl_failed} failed")

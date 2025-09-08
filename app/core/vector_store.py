@@ -145,6 +145,8 @@ class VectorStore:
                      - description: table description
                      - columns: list of column dictionaries
                      - sample_data: list of sample data records
+                    - join_info: list of join information dictionaries
+                     
             table_name: Optional table name override
             
         Returns:
@@ -157,6 +159,7 @@ class VectorStore:
             description = ddl_data.get('description', '')
             column_descriptions = ddl_data.get('columns', [])
             sample_data = ddl_data.get('sample_data', [])
+            join_info = ddl_data.get('join_info', [])
             
             if not name or not ddl_statement:
                 raise ValueError("Missing required table name or DDL statement")
@@ -166,27 +169,43 @@ class VectorStore:
             columns = self._extract_columns_from_ddl(ddl_statement) if object_type == "table" else []
             
             # Create enhanced content for embedding (preserving rich context)
-            enhanced_content = ddl_statement
+            # Create enhanced content for embedding (only table, DDL, and description)
+            enhanced_content = f"Table: {name}\n\n{ddl_statement}"
             if description:
                 enhanced_content += f"\n\nTable Description: {description}"
-            if column_descriptions:
-                enhanced_content += f"\n\nColumn Descriptions:"
-                for col in column_descriptions:
-                    col_name = col.get('name', '')
-                    col_desc = col.get('description', '')
-                    if col_name and col_desc:
-                        enhanced_content += f"\n- {col_name}: {col_desc}"
-            if sample_data:
-                enhanced_content += f"\n\nSample Data:"
-                for sample in sample_data[:3]:  # Limit to first 3 samples
-                    if 'merchant_name' in sample:
-                        enhanced_content += f"\n- {sample.get('merchant_name', '')}, {sample.get('merchant_category', '')}, {sample.get('txn_type', '')}, {sample.get('direction', '')}, {sample.get('amount_aed', '')} AED"
-                    elif 'full_name' in sample:
-                        enhanced_content += f"\n- User: {sample.get('full_name', '')}, Email: {sample.get('email', '')}"
-                    elif 'account_name' in sample:
-                        enhanced_content += f"\n- Account: {sample.get('account_name', '')}, Type: {sample.get('account_type', '')}, Currency: {sample.get('currency', '')}"
-            
-            # Generate embedding from enhanced content
+            # Debug prints
+            print(f"DEBUG: Processing table: {name}")
+            print(f"DEBUG: DDL length: {len(ddl_statement)}")
+            print(f"DEBUG: Enhanced content length: {len(enhanced_content)}")
+            # enhanced_content = ddl_statement
+            # if description:
+            #     enhanced_content += f"\n\nTable Description: {description}"
+            # if column_descriptions:
+            #     enhanced_content += f"\n\nColumn Descriptions:"
+            #     for col in column_descriptions:
+            #         col_name = col.get('name', '')
+            #         col_desc = col.get('description', '')
+            #         if col_name and col_desc:
+            #             enhanced_content += f"\n- {col_name}: {col_desc}"
+            # if sample_data:
+            #     enhanced_content += f"\n\nSample Data:"
+            #     for sample in sample_data[:3]:  # Limit to first 3 samples
+            #         if 'merchant_name' in sample:
+            #             enhanced_content += f"\n- {sample.get('merchant_name', '')}, {sample.get('merchant_category', '')}, {sample.get('txn_type', '')}, {sample.get('direction', '')}, {sample.get('amount_aed', '')} AED"
+            #         elif 'full_name' in sample:
+            #             enhanced_content += f"\n- User: {sample.get('full_name', '')}, Email: {sample.get('email', '')}"
+            #         elif 'account_name' in sample:
+            #             enhanced_content += f"\n- Account: {sample.get('account_name', '')}, Type: {sample.get('account_type', '')}, Currency: {sample.get('currency', '')}"
+            # ADD THIS SECTION:
+            if join_info:
+                enhanced_content += f"\n\nJoin Information:"
+                for join in join_info:
+                    join_type = join.get('type', '')
+                    join_table = join.get('table', '')
+                    join_condition = join.get('condition', '')
+                    if join_type and join_table and join_condition:
+                        enhanced_content += f"\n- {join_type} JOIN {join_table} ON {join_condition}"
+            # # Generate embedding from enhanced content
             embedding = self._generate_embedding(enhanced_content)
             
             # Create point with structured payload matching JSON format
@@ -202,6 +221,7 @@ class VectorStore:
                     "description": description,
                     "columns": column_descriptions,  # Structured column info
                     "sample_data": sample_data,
+                    "join_info": join_info,
                     "ddl_columns": columns,  # Extracted column names for backward compatibility
                     "timestamp": datetime.now().isoformat(),
                     "collection_type": "ddl_definitions"
@@ -362,7 +382,7 @@ class VectorStore:
                 collection_type = result["collection_type"]
                 
                 if collection_type == "ddl_definitions":
-                    ddl_text = f"-- Table: {payload['name']}\n{payload['ddl_text']}\n"
+                    ddl_text = f"-- Table: {payload['table']}\n{payload['ddl']}\n"
                     ddl_parts.append(ddl_text)
                     
                 elif collection_type == "query_pairs":
@@ -431,8 +451,8 @@ class VectorStore:
                 # Filter results that actually match the table name
                 for result in ddl_results:
                     payload = result['payload']
-                    if payload.get('name', '').lower() == table_name.lower():
-                        ddl_text = f"-- Table: {payload['name']}\n{payload.get('ddl_text', '')}\n"
+                    if payload.get('table', '').lower() == table_name.lower():
+                        ddl_text = f"-- Table: {payload['table']}\n{payload.get('ddl', '')}\n"
                         if ddl_text not in ddl_parts:
                             ddl_parts.append(ddl_text)
                         break

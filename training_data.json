@@ -4,6 +4,12 @@
       "table": "transactions",
       "ddl": "CREATE TABLE transactions (\n            txn_id INTEGER PRIMARY KEY,\n            account_id INTEGER NOT NULL,\n            occurred_at TEXT NOT NULL,\n            posted_at TEXT NOT NULL,\n            direction TEXT NOT NULL CHECK (direction IN ('debit','credit')),\n            amount NUMERIC NOT NULL CHECK (amount > 0),\n            currency TEXT NOT NULL,\n            amount_aed NUMERIC NOT NULL,\n            fx_rate NUMERIC,\n            txn_type TEXT NOT NULL CHECK (txn_type IN ('purchase','atm_withdrawal','transfer_in','transfer_out',\n                'salary','refund','fee','interest','bill_payment','card_payment','cash_deposit','cheque')),\n            merchant_name TEXT,\n            merchant_category TEXT,\n            city TEXT,\n            country TEXT NOT NULL,\n            status TEXT NOT NULL CHECK (status IN ('pending','posted','reversed')),\n            description TEXT NOT NULL,\n            transfer_group_id TEXT,\n            running_balance_after NUMERIC NOT NULL,\n            FOREIGN KEY (account_id) REFERENCES accounts(account_id)\n        )",
       "description": "Central transaction table that stores all financial activities across user accounts. This includes debit transactions (purchases at merchants, ATM withdrawals, bill payments, fees) and credit transactions (salary deposits, refunds, transfers in). Each transaction captures detailed merchant information, location data, transaction types, and maintains running balance calculations. Critical for analyzing spending patterns, merchant preferences, financial behavior, and generating insights about user expenses and income. Contains both the original transaction currency and AED-converted amounts for multi-currency support.",
+      "join_info": [
+        {
+          "target_table": "accounts",
+          "on_condition": "transactions.account_id = accounts.account_id"
+        }
+      ],
       "columns": [
         {
           "name": "txn_id",
@@ -185,6 +191,9 @@
       "table": "users",
       "ddl": "CREATE TABLE users (\n            user_id INTEGER PRIMARY KEY,\n            full_name TEXT NOT NULL,\n            email TEXT UNIQUE NOT NULL,\n            created_at TEXT NOT NULL\n        )",
       "description": "Master user registry containing all registered users of the banking system. This table serves as the central identity store linking users to their accounts, transactions, and financial data. Each user has a unique identifier used throughout the system for data isolation and personalized financial analysis. Essential for user authentication, account ownership verification, and ensuring data privacy between different users.",
+      "join_info": [
+     
+      ],
       "columns": [
         {
           "name": "user_id",
@@ -222,6 +231,12 @@
       "table": "accounts",
       "ddl": "CREATE TABLE accounts (\n            account_id INTEGER PRIMARY KEY,\n            user_id INTEGER NOT NULL,\n            account_type TEXT NOT NULL CHECK (account_type IN ('checking','savings','credit_card','brokerage_cash')),\n            account_name TEXT NOT NULL,\n            currency TEXT NOT NULL CHECK (currency IN ('AED','SAR','USD','EUR','GBP')),\n            opened_at TEXT NOT NULL,\n            closed_at TEXT,\n            starting_balance NUMERIC NOT NULL,\n            FOREIGN KEY (user_id) REFERENCES users(user_id)\n        )",
       "description": "Comprehensive account registry storing all financial accounts owned by users across different banks and account types. Includes traditional banking accounts (checking, savings), credit facilities (credit cards), and investment accounts (brokerage cash). Each account maintains its base currency, lifecycle information, and starting balance. Essential for multi-account financial analysis, net worth calculations, and understanding user's complete financial portfolio across different institutions and currencies.",
+      "join_info": [
+        {
+          "target_table": "users",
+          "on_condition": "accounts.user_id = users.user_id"
+        }
+      ],
       "columns": [
         {
           "name": "account_id",
@@ -313,6 +328,12 @@
       "table": "daily_account_value",
       "ddl": "CREATE TABLE daily_account_value (\n            dav_id INTEGER PRIMARY KEY,\n            account_id INTEGER NOT NULL,\n            date TEXT NOT NULL,\n            start_balance NUMERIC NOT NULL,\n            total_credits NUMERIC NOT NULL,\n            total_debits NUMERIC NOT NULL,\n            interest_accrued NUMERIC NOT NULL,\n            fees_charged NUMERIC NOT NULL,\n            end_balance NUMERIC NOT NULL,\n            FOREIGN KEY (account_id) REFERENCES accounts(account_id),\n            UNIQUE(account_id, date)\n        )",
       "description": "Daily financial snapshot table providing aggregated account activity and balance information for each account on each day. Pre-calculates daily totals for credits, debits, interest, and fees to enable efficient historical analysis and balance tracking. Essential for generating account statements, daily balance reports, cash flow analysis, and understanding account activity patterns over time. Each record represents one account's complete financial activity for a single day.",
+      "join_info": [
+        {
+          "target_table": "accounts",
+          "on_condition": "daily_account_value.account_id = accounts.account_id"
+        }
+      ],
       "columns": [
         {
           "name": "dav_id",
@@ -402,6 +423,9 @@
       "table": "fx_rates",
       "ddl": "CREATE TABLE fx_rates (\n            rate_date TEXT NOT NULL,\n            base_currency TEXT NOT NULL,\n            aed_per_unit NUMERIC NOT NULL,\n            UNIQUE(rate_date, base_currency)\n        )",
       "description": "Historical foreign exchange rates repository maintaining daily conversion rates between UAE Dirhams (AED) and major international currencies. Essential for converting multi-currency transactions to AED for consistent financial analysis and reporting. Supports accurate historical transaction conversion, currency exposure analysis, and understanding the impact of exchange rate fluctuations on account values. Updated daily with market rates from financial data providers.",
+      "join_info": [
+        
+      ],
       "columns": [
         {
           "name": "rate_date",
@@ -453,6 +477,9 @@
       "table": "merchants",
       "ddl": "CREATE TABLE merchants (\n            merchant_id INTEGER PRIMARY KEY,\n            merchant_name TEXT NOT NULL,\n            merchant_category TEXT NOT NULL,\n            country TEXT NOT NULL\n        )",
       "description": "Comprehensive merchant registry containing standardized information about businesses and service providers where transactions occur. Serves as a reference database for merchant normalization, category standardization, and location validation. Used for fuzzy matching algorithms to resolve merchant name variations in transaction data and ensure consistent merchant identification across the system. Essential for accurate spending analysis by merchant and category.",
+      "join_info": [
+       
+      ],
       "columns": [
         {
           "name": "merchant_id",
