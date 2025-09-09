@@ -24,7 +24,7 @@ class BaseLLM(ABC):
         pass
     
     @abstractmethod
-    def explain_sql(self, sql: str, relevant_tables: List[str]) -> Dict[str, Any]:
+    def explain_sql(self, sql: str, relevant_tables: List[str], db_connector=None) -> Dict[str, Any]:
         """Explain what a SQL query does and extract string literal mappings."""
         pass
     
@@ -82,7 +82,7 @@ class OpenAILLM(BaseLLM):
             logger.error(f"OpenAI API error: {str(e)}")
             raise LLMError(f"Failed to generate SQL: {str(e)}")
     
-    def explain_sql(self, sql: str, relevant_tables: List[str]) -> Dict[str, Any]:
+    def explain_sql(self, sql: str, relevant_tables: List[str], db_connector=None) -> Dict[str, Any]:
         """Explain SQL query using OpenAI GPT and extract string literal mappings."""
         try:
             prompt = f"""
@@ -109,12 +109,12 @@ class OpenAILLM(BaseLLM):
             explanation = response.choices[0].message.content.strip()
             
             # Extract string literals and their mappings
-            string_mappings = self._extract_string_literal_mappings(sql, relevant_tables)
+            string_mappings = self._extract_string_literal_mappings(sql, relevant_tables, db_connector)
             print(f"String mappings: {string_mappings}")
             # Execute fuzzy queries and find best matches if database connector is available
             best_matches = []
-            if self.db_connector and string_mappings:
-                best_matches = self._execute_fuzzy_queries_and_find_best_matches(string_mappings)
+            if db_connector and string_mappings:
+                best_matches = self._execute_fuzzy_queries_and_find_best_matches(string_mappings, db_connector)
             logger.info("Successfully generated SQL explanation with string mappings")
             return {
                 "explanation": explanation,
@@ -126,11 +126,15 @@ class OpenAILLM(BaseLLM):
             logger.error(f"OpenAI API error during explanation: {str(e)}")
             raise LLMError(f"Failed to explain SQL: {str(e)}")
     
-    def _extract_string_literal_mappings(self, sql: str, relevant_tables: List[str]) -> List[Dict[str, str]]:
-        """Extract string literals from SQL and map them to their table/column context using AST parsing."""
+    def _extract_string_literal_mappings(self, sql: str, relevant_tables: List[str], db_connector=None) -> List[Dict[str, str]]:
+        """Extract string literals from SQL and map them to their table/column context using enhanced AST parsing."""
         try:
-            # Use AST-based approach with relevant tables list directly
-            ast_results = self.find_string_literals_ast(sql, relevant_tables)
+            # Use enhanced AST-based approach with cardinality analysis if db_connector is provided
+            if db_connector:
+                ast_results = self.find_string_literals_ast_enhanced(sql, relevant_tables, db_connector)
+            else:
+                # Fallback to original method if no database connector
+                ast_results = self.find_string_literals_ast(sql, relevant_tables)
             print(f"AST results: {ast_results}")
             # Convert AST results to the expected format for compatibility
             mappings = []
@@ -141,14 +145,30 @@ class OpenAILLM(BaseLLM):
                 table_name = result.get("table", "unknown")
                 column_name = result.get("column", "")
                 
+                # Skip summary entries - they're not real database tables
+                if table_name == "SUMMARY" or result.get("kind") == "summary":
+                    continue
+                
                 # Skip if we've already processed this literal for this table/column
                 key = (literal_value, table_name, column_name)
                 if key in processed_literals:
                     continue
                 processed_literals.add(key)
                 
-                # Generate fuzzy search variations for this literal
-                fuzzy_variations = self._generate_fuzzy_variations(literal_value, table_name, column_name)
+                # Only generate fuzzy search variations for high cardinality columns
+                is_high_cardinality = result.get("is_high_cardinality", False)
+                fuzzy_variations = []
+                if is_high_cardinality:
+                    fuzzy_variations = self._generate_fuzzy_variations(literal_value, table_name, column_name)
+                else:
+                    # For low cardinality columns, still provide basic info but no fuzzy matching
+                    fuzzy_variations = [{
+                        "type": "skipped_low_cardinality",
+                        "pattern": literal_value,
+                        "sql": f"-- Skipped: {column_name} has ≤{result.get('cardinality_threshold', 10)} unique values",
+                        "priority": 999,
+                        "reason": f"Column {table_name}.{column_name} filtered out due to low cardinality"
+                    }]
                 
                 # Convert the AST result format to the expected mapping format
                 mapping = {
@@ -226,6 +246,253 @@ class OpenAILLM(BaseLLM):
         
         return table_info
     
+    def get_table_column_analysis(self, db_connector, table_name: str) -> Dict[str, int]:
+        """Get unique count analysis for all columns in a table."""
+        try:
+            print(f"Analyzing table: {table_name}")
+            # Get table schema first
+            schema = db_connector.get_table_schema(table_name)
+            print(f"Schema for {table_name}: {schema}")
+            columns = []
+            
+            # Extract column names based on database type
+            if 'columns' in schema:
+                if isinstance(schema['columns'], list) and len(schema['columns']) > 0:
+                    # Handle different schema formats
+                    first_col = schema['columns'][0]
+                    print(f"First column structure: {first_col}")
+                    if 'column_name' in first_col:
+                        columns = [col['column_name'] for col in schema['columns']]
+                    elif 'name' in first_col:
+                        columns = [col['name'] for col in schema['columns']]
+            
+            print(f"Extracted columns for {table_name}: {columns}")
+            if not columns:
+                logger.warning(f"No columns found for table {table_name}")
+                return {}
+            
+            # Get unique counts for each column
+            column_unique_counts = {}
+            for column in columns:
+                try:
+                    # Use COUNT(DISTINCT column_name) to get unique values
+                    sql = f"SELECT COUNT(DISTINCT {column}) as unique_count FROM {table_name}"
+                    print(f"Executing: {sql}")
+                    result = db_connector.execute_query(sql)
+                    print(f"Result for {column}: {result}")
+                    
+                    if result and 'data' in result and len(result['data']) > 0:
+                        unique_count = result['data'][0][0]
+                        column_unique_counts[column] = unique_count
+                        print(f"Column {column}: {unique_count} unique values")
+                    else:
+                        column_unique_counts[column] = 0
+                        print(f"Column {column}: 0 unique values (no data)")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to get unique count for {table_name}.{column}: {e}")
+                    print(f"Error analyzing {column}: {e}")
+                    column_unique_counts[column] = 0
+            
+            print(f"Final column analysis for {table_name}: {column_unique_counts}")
+            logger.info(f"Column analysis for {table_name}: {column_unique_counts}")
+            return column_unique_counts
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze table {table_name}: {e}")
+            print(f"Failed to analyze table {table_name}: {e}")
+            return {}
+    
+    def filter_high_cardinality_columns(self, column_analysis: Dict[str, int], threshold: int = 10) -> List[str]:
+        """Filter columns to keep only those with unique count > threshold."""
+        high_cardinality_columns = [
+            column for column, unique_count in column_analysis.items() 
+            if unique_count > threshold
+        ]
+        logger.info(f"High cardinality columns (>{threshold}): {high_cardinality_columns}")
+        return high_cardinality_columns
+    
+    def find_string_literals_ast_enhanced(self, sql: str, relevant_tables: List[str], db_connector) -> List[dict]:
+        """
+        Enhanced version: Extract column ↔ string literal predicates using SQL AST with cardinality analysis.
+        Only processes columns with unique count > 10.
+        """
+        print(f"SQL: {sql}")
+        print(f"Relevant tables: {relevant_tables}")
+        
+        # First, analyze all tables and get high cardinality columns
+        table_columns_map = {}
+        for table in relevant_tables:
+            column_analysis = self.get_table_column_analysis(db_connector, table)
+            high_cardinality_columns = self.filter_high_cardinality_columns(column_analysis)
+            table_columns_map[table] = high_cardinality_columns
+            print(f"Table {table} high cardinality columns: {high_cardinality_columns}")
+        
+        def is_high_cardinality_column(table_name: str, column_name: str) -> bool:
+            """Check if a column is high cardinality (>10 unique values)."""
+            return column_name in table_columns_map.get(table_name, [])
+        
+        try:
+            tree = sqlglot.parse_one(sql, read="postgres")
+        except Exception as e:
+            logger.debug(f"sqlglot parse failed: {e}")
+            return []
+
+        out, seen = [], set()
+
+        def resolve_table_name(alias: str) -> str:
+            """Resolve alias to actual table name using relevant_tables."""
+            if not alias:
+                # If no alias and we have relevant tables, use the first one as default
+                if relevant_tables:
+                    return relevant_tables[0]
+                return "unknown"
+            
+            # Check if alias matches any relevant table (case-insensitive)
+            if relevant_tables:
+                for table in relevant_tables:
+                    if alias.lower() == table.lower():
+                        return table
+                # If no exact match, return first relevant table as fallback
+                return relevant_tables[0]
+            
+            return "unknown"
+
+        def extract_column_info(column_expr):
+            """Extract alias and column name from a column expression."""
+            if isinstance(column_expr, exp.Column):
+                alias = column_expr.table if column_expr.table else None
+                column = column_expr.name
+                return alias, column
+            
+            # Try to find a column within the expression (for functions, etc.)
+            for column in column_expr.find_all(exp.Column):
+                alias = column.table if column.table else None
+                column_name = column.name
+                return alias, column_name
+            
+            return None, None
+
+        # Find all comparison operations with string literals
+        for node in tree.find_all((exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.Like, exp.ILike, exp.In)):
+            if isinstance(node, (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE)):
+                # Binary comparisons: column = 'value'
+                left, right = node.left, node.right
+                alias, column = extract_column_info(left)
+                
+                if isinstance(right, exp.Literal) and right.is_string:
+                    table_name = resolve_table_name(alias)
+                    
+                    # Map expression types to operators
+                    op_map = {
+                        exp.EQ: "=", exp.NEQ: "!=", exp.LT: "<", 
+                        exp.LTE: "<=", exp.GT: ">", exp.GTE: ">="
+                    }
+                    operator = op_map.get(type(node), "=")
+                    
+                    key = (alias, column, operator, right.this)
+                    if key not in seen and column:
+                        seen.add(key)
+                        is_high_cardinality = is_high_cardinality_column(table_name, column)
+                        out.append({
+                            "table": table_name,
+                            "alias": alias,
+                            "column": column,
+                            "operator": operator,
+                            "value": right.this,
+                            "values": [right.this],
+                            "kind": "compare",
+                            "high_cardinality_columns": table_columns_map.get(table_name, []),
+                            "column_analysis": "included" if is_high_cardinality else "filtered_out",
+                            "is_high_cardinality": is_high_cardinality,
+                            "cardinality_threshold": 10
+                        })
+            
+            elif isinstance(node, (exp.Like, exp.ILike)):
+                # LIKE/ILIKE operations
+                left, right = node.this, node.expression
+                alias, column = extract_column_info(left)
+                
+                if isinstance(right, exp.Literal) and right.is_string:
+                    table_name = resolve_table_name(alias)
+                    
+                    operator = "ILIKE" if isinstance(node, exp.ILike) else "LIKE"
+                    
+                    # Extract the actual search term by removing % wildcards
+                    raw_value = right.this
+                    clean_value = raw_value.strip('%')  # Remove leading/trailing %
+                    
+                    key = (alias, column, operator, raw_value)
+                    if key not in seen and column:
+                        seen.add(key)
+                        is_high_cardinality = is_high_cardinality_column(table_name, column)
+                        out.append({
+                            "table": table_name,
+                            "alias": alias,
+                            "column": column,
+                            "operator": operator,
+                            "value": clean_value,  # Use cleaned value (without %)
+                            "raw_value": raw_value,  # Keep original for reference
+                            "values": [clean_value],
+                            "kind": "compare",
+                            "high_cardinality_columns": table_columns_map.get(table_name, []),
+                            "column_analysis": "included" if is_high_cardinality else "filtered_out",
+                            "is_high_cardinality": is_high_cardinality,
+                            "cardinality_threshold": 10
+                        })
+            
+            elif isinstance(node, exp.In):
+                # IN operations: column IN ('val1', 'val2')
+                alias, column = extract_column_info(node.this)
+                
+                values = []
+                for expr in node.expressions:
+                    if isinstance(expr, exp.Literal) and expr.is_string:
+                        values.append(expr.this)
+                
+                if values and column:
+                    table_name = resolve_table_name(alias)
+                    
+                    key = (alias, column, "IN", tuple(values))
+                    if key not in seen:
+                        seen.add(key)
+                        is_high_cardinality = is_high_cardinality_column(table_name, column)
+                        out.append({
+                            "table": table_name,
+                            "alias": alias,
+                            "column": column,
+                            "operator": "IN",
+                            "value": values[0] if len(values) == 1 else None,
+                            "values": values,
+                            "kind": "inlist",
+                            "high_cardinality_columns": table_columns_map.get(table_name, []),
+                            "column_analysis": "included" if is_high_cardinality else "filtered_out",
+                            "is_high_cardinality": is_high_cardinality,
+                            "cardinality_threshold": 10
+                        })
+        
+        # Add summary information about all tables and their high cardinality columns
+        summary_info = {
+            "table": "SUMMARY",
+            "alias": None,
+            "column": "ANALYSIS_SUMMARY",
+            "operator": "INFO",
+            "value": f"Analyzed {len(relevant_tables)} tables",
+            "values": [],
+            "kind": "summary",
+            "tables_analysis": {
+                table: {
+                    "high_cardinality_columns": columns,
+                    "column_count": len(columns)
+                } for table, columns in table_columns_map.items()
+            },
+            "total_high_cardinality_columns": sum(len(columns) for columns in table_columns_map.values())
+        }
+        out.append(summary_info)
+        
+        print(f"Enhanced AST results with cardinality analysis: {out}")
+        return out
+
     def find_string_literals_ast(self, sql: str, relevant_tables: List[str]) -> List[dict]:
         """
         Robustly extract column ↔ string literal predicates using SQL AST.
@@ -571,7 +838,7 @@ class OpenAILLM(BaseLLM):
     
 
     
-    def _execute_fuzzy_queries_and_find_best_matches(self, string_mappings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _execute_fuzzy_queries_and_find_best_matches(self, string_mappings: List[Dict[str, Any]], db_connector) -> List[Dict[str, Any]]:
         """Execute fuzzy search queries and find the best matching results."""
         best_matches = []
         
@@ -590,8 +857,13 @@ class OpenAILLM(BaseLLM):
                 variation_results = []
                 
                 for variation in fuzzy_variations:
+                    # Skip execution for 'skipped_low_cardinality' variations
+                    if variation.get("type") == "skipped_low_cardinality":
+                        print(f"Skipping execution for low cardinality column: {variation.get('reason', 'Unknown reason')}")
+                        continue
+                    
                     try:
-                        result = self.db_connector.execute_query(variation["sql"])
+                        result = db_connector.execute_query(variation["sql"])
                         row_count = len(result["data"])
                         
                         # Extract unique merchant names from results

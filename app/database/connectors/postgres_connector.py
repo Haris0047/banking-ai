@@ -117,63 +117,63 @@ class PostgreSQLConnector(DatabaseConnector):
         except Exception as e:
             logger.warning(f"Error closing PostgreSQL connection: {str(e)}")
     
-    def execute_query(self, sql: str) -> Dict[str, Any]:
-        """
-        Execute SQL query and return results.
-        
-        Args:
-            sql: SQL query to execute
+    def execute_query(self, sql: str, params: Optional[tuple] = None) -> Dict[str, Any]:
+            """
+            Execute SQL query and return results.
             
-        Returns:
-            Dictionary containing results, columns, and metadata
-        """
-        try:
-            if not self.connection or self.connection.closed:
-                self.connect()
-            
-            logger.debug(f"Executing PostgreSQL query: {sql[:100]}...")
-            
-            self.cursor.execute(sql)
-            
-            # Handle different query types
-            if self.cursor.description:
-                # SELECT query - fetch results
-                rows = self.cursor.fetchall()
-                columns = [desc[0] for desc in self.cursor.description]
+            Args:
+                sql: SQL query to execute
+                params: Optional parameters for the SQL query
                 
-                # Convert RealDictRow to regular dict/list
-                data = []
-                for row in rows:
-                    if isinstance(row, psycopg2.extras.RealDictRow):
-                        data.append(list(row.values()))
-                    else:
-                        data.append(list(row))
+            Returns:
+                Dictionary containing results, columns, and metadata
+            """
+            try:
+                if not self.connection or self.connection.closed:
+                    self.connect()
                 
-                result = {
-                    "data": data,
-                    "columns": columns,
-                    "row_count": len(data),
-                    "query_type": "SELECT"
-                }
-            else:
-                # Non-SELECT query (INSERT, UPDATE, DELETE, etc.)
-                result = {
-                    "data": [],
-                    "columns": [],
-                    "row_count": self.cursor.rowcount,
-                    "query_type": "MODIFY"
-                }
-            
-            logger.debug(f"Query executed successfully, returned {result['row_count']} rows")
-            return result
-            
-        except psycopg2.Error as e:
-            logger.error(f"PostgreSQL query execution failed: {str(e)}")
-            raise DatabaseConnectionError(f"Query execution failed: {str(e)}")
-        except Exception as e:
-            logger.error(f"Unexpected error executing query: {str(e)}")
-            raise DatabaseConnectionError(f"Unexpected query error: {str(e)}")
-    
+                logger.debug(f"Executing PostgreSQL query: {sql[:100]}... with params: {params}")
+                
+                self.cursor.execute(sql, params) # Pass parameters to execute
+                
+                # Handle different query types
+                if self.cursor.description:
+                    # SELECT query - fetch results
+                    rows = self.cursor.fetchall()
+                    columns = [desc[0] for desc in self.cursor.description]
+                    
+                    # Convert RealDictRow to regular dict/list
+                    data = []
+                    for row in rows:
+                        if isinstance(row, psycopg2.extras.RealDictRow):
+                            data.append(list(row.values()))
+                        else:
+                            data.append(list(row))
+                    
+                    result = {
+                        "data": data,
+                        "columns": columns,
+                        "row_count": len(data),
+                        "query_type": "SELECT"
+                    }
+                else:
+                    # Non-SELECT query (INSERT, UPDATE, DELETE, etc.)
+                    result = {
+                        "data": [],
+                        "columns": [],
+                        "row_count": self.cursor.rowcount,
+                        "query_type": "MODIFY"
+                    }
+                
+                logger.debug(f"Query executed successfully, returned {result['row_count']} rows")
+                return result
+                
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL query execution failed: {str(e)}")
+                raise DatabaseConnectionError(f"Query execution failed: {str(e)}")
+            except Exception as e:
+                logger.error(f"Unexpected error executing query: {str(e)}")
+                raise DatabaseConnectionError(f"Unexpected query error: {str(e)}")
     def get_table_names(self) -> List[str]:
         """Get list of table names in the database."""
         try:
@@ -221,19 +221,19 @@ class PostgreSQLConnector(DatabaseConnector):
                 ORDER BY ordinal_position
             """
             
-            self.cursor.execute(sql, (table_name,))
-            rows = self.cursor.fetchall()
+            result = self.execute_query(sql, (table_name,)) # Pass parameters as a tuple
+            rows = result["data"]
             
             columns = []
-            for row in rows:
+            for row_values in rows: # Iterate through row_values (which are lists from execute_query)
                 column_info = {
-                    "name": row[0],
-                    "type": row[1],
-                    "nullable": row[2] == 'YES',
-                    "default": row[3],
-                    "max_length": row[4],
-                    "precision": row[5],
-                    "scale": row[6]
+                    "name": row_values[0],
+                    "type": row_values[1],
+                    "nullable": row_values[2] == 'YES',
+                    "default": row_values[3],
+                    "max_length": row_values[4],
+                    "precision": row_values[5],
+                    "scale": row_values[6]
                 }
                 columns.append(column_info)
             
@@ -249,7 +249,7 @@ class PostgreSQLConnector(DatabaseConnector):
         except Exception as e:
             logger.error(f"Failed to get schema for table {table_name}: {str(e)}")
             raise DatabaseConnectionError(f"Failed to get table schema: {str(e)}")
-    
+        
     def get_ddl_statement(self, table_name: str) -> str:
         """
         Get DDL (CREATE TABLE) statement for a table.

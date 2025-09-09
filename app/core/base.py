@@ -343,7 +343,7 @@ class VannaAI:
         """
         try:
             logger.debug(f"Explaining SQL: {sql[:100]}...")
-            explanation = self.llm.explain_sql(sql)
+            explanation = self.llm.explain_sql(sql, [], self.database_connector)
             logger.info("SQL explanation generated successfully")
             return explanation
         except Exception as e:

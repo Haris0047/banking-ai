@@ -232,7 +232,7 @@ class SQLGenerator:
         """Generate explanation for the SQL query."""
         try:
             logger.debug("Generating SQL explanation...")
-            explanation_result = self.llm.explain_sql(sql, relevant_tables)
+            explanation_result = self.llm.explain_sql(sql, relevant_tables, self.db_connector)
             logger.debug("SQL explanation generated successfully")
             return explanation_result
         except Exception as e:
